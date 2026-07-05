@@ -8,7 +8,19 @@ import {
 import User from '../models/user.model';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+
+function getClientRedirectUrl(req: Request): string {
+  if (process.env.CLIENT_URL) {
+    return process.env.CLIENT_URL;
+  }
+  // In production consolidated hosting, redirect to the request origin
+  if (IS_PROD) {
+    const host = req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    return `${protocol}://${host}`;
+  }
+  return 'http://localhost:5173';
+}
 
 function setTokenCookies(res: Response, accessToken: string, refreshToken: string) {
   // sameSite configuration:
@@ -40,8 +52,10 @@ export async function googleCallback(
 ): Promise<void> {
   try {
     const user = req.user as Express.User;
+    const clientRedirectUrl = getClientRedirectUrl(req);
+    
     if (!user) {
-      res.redirect(`${CLIENT_URL}/login?error=auth_failed`);
+      res.redirect(`${clientRedirectUrl}/login?error=auth_failed`);
       return;
     }
 
@@ -49,9 +63,10 @@ export async function googleCallback(
     await storeRefreshToken(user._id, tokens.refreshToken);
     setTokenCookies(res, tokens.accessToken, tokens.refreshToken);
 
-    res.redirect(`${CLIENT_URL}/login/callback`);
+    res.redirect(`${clientRedirectUrl}/login/callback`);
   } catch {
-    res.redirect(`${CLIENT_URL}/login?error=auth_failed`);
+    const clientRedirectUrl = getClientRedirectUrl(req);
+    res.redirect(`${clientRedirectUrl}/login?error=auth_failed`);
   }
 }
 
