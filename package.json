@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:prod": "vite build && cd backend && npm install && npm run build",
+    "build:prod": "vite build && cd backend && npm install --include=dev && npm run build",
     "start:prod": "cd backend && npm start",
     "lint": "eslint .",
     "preview": "vite preview"
