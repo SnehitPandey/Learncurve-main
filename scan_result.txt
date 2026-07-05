@@ -1,0 +1,16 @@
+Frontend Unused:
+\Components\App\presence\PresenceIndicator.jsx
+\Components\App\Quiz\QuizDashboard.jsx
+\Components\App\room\study\FocusTimerWidget.jsx
+\Components\App\room\study\RoadmapTopicsPanel.jsx
+\Components\App\room\study\RoomTopBar.jsx
+\Components\App\room\study\StudyContentPanel.jsx
+\Components\App\room\studyPanel.jsx
+\Components\App\settings\settingsCard.jsx
+\Components\auth\OTPInput.jsx
+\hooks\useToast.js
+\services\focusService.js
+\services\partnerService.js
+\services\quizService.js
+
+Backend Unused:

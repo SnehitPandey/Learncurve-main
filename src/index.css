@@ -1,0 +1,264 @@
+@import "tailwindcss";
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+    --color-primary: rgb(34, 167, 153);
+    --color-primary-rgb: 41, 156, 145;
+    --color-secondary: rgb(224, 224, 224);
+    --color-secondary-rgb: 224, 224, 224;
+    --color-background: rgb(255, 255, 255);
+    --color-background-rgb: 255, 255, 255;
+    --color-text: #1d1d1d;
+    --color-text-rgb: 29, 29, 29;
+    --color-alt: #e7e7e7;
+    --color-alt-rgb: 231, 231, 231;
+    --color-gradient: linear-gradient(
+        160deg,
+        #e2e2e2 0%,
+        #afebe0 30%,
+        #86f3e1 70%,
+        #28ffea 100%
+    );
+    
+    /* Selection colors for light theme */
+    --color-selection-bg: rgba(34, 167, 153, 0.2);
+    --color-selection-text: rgb(21, 120, 109);
+    --color-selection-glow: rgba(34, 167, 153, 0.6);
+    --color-selection-shadow: rgba(34, 167, 153, 0.4);
+}
+
+@layer theme {
+    [data-theme="dark"] {
+        --color-primary: rgb(29, 211, 193);
+        --color-primary-rgb: 68, 207, 194;
+        --color-secondary: rgb(20, 20, 20);
+        --color-secondary-rgb: 20, 20, 20;
+        --color-background-rgb: 18, 18, 20;
+        --color-background: #121214;
+        --color-text: #e7e7e7;
+        --color-text-rgb: 231, 231, 231;
+        --color-alt: #1d1d1d;
+        --color-alt-rgb: 29, 29, 29;
+        --color-gradient: linear-gradient(
+            160deg,
+            #121214 0%,
+            #182026 35%,
+            #0f4442 60%,
+            #44cfc2 100%
+        );
+        
+        /* Selection colors for dark theme */
+        --color-selection-bg: rgba(68, 207, 194, 0.25);
+        --color-selection-text: rgb(139, 241, 216);
+        --color-selection-glow: rgba(68, 207, 194, 0.8);
+        --color-selection-shadow: rgba(68, 207, 194, 0.5);
+    }
+}
+
+.idk {
+    --color-primary: rgb(34, 167, 153);
+    --color-primary-rgb: 41, 156, 145;
+    --color-secondary: rgb(224, 224, 224);
+    --color-secondary-rgb: 224, 224, 224;
+    --color-background: rgb(255, 255, 255);
+    --color-background-rgb: 255, 255, 255;
+    --color-text: #1d1d1d;
+    --color-text-rgb: 231, 231, 231;
+    --color-gradient: linear-gradient(
+        160deg,
+        #e2e2e2 0%,
+        #afebe0 30%,
+        #86f3e1 70%,
+        #28ffea 100%
+    );
+}
+
+body {
+    @apply transition-colors duration-300;
+    background: var(--color-gradient);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    background-size: cover;
+    color: var(--color-background);
+}
+
+html[data-theme="dark"] body {
+    background: var(--color-gradient);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    background-size: cover;
+    color: #fff;
+}
+
+/* Theme-aware selection styles */
+::selection {
+    /* background-color: var(--color-selection-bg); */
+    color: var(--color-selection-text);
+    text-shadow: 
+        0 0 2px var(--color-selection-glow), 
+        0 0 10px var(--color-selection-glow),
+        1px 1px 4px var(--color-selection-shadow), 
+        -1px -1px 4px var(--color-selection-shadow),
+        1px -1px 4px var(--color-selection-shadow), 
+        -1px 1px 4px var(--color-selection-shadow);
+}
+
+::-moz-selection {
+    /* background-color: var(--color-selection-bg); */
+    color: var(--color-selection-text);
+    text-shadow: 
+        0 0 3px var(--color-selection-glow), 
+        0 0 10px var(--color-selection-glow),
+        1px 1px 4px var(--color-selection-shadow), 
+        -1px -1px 4px var(--color-selection-shadow),
+        1px -1px 4px var(--color-selection-shadow), 
+        -1px 1px 4px var(--color-selection-shadow);
+}
+
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+    background-color: #00ffdd00;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+    background-color: #00664d;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgb(0, 83, 75);
+    border-radius: 2px;
+    transition: all 0.15s ease;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+    background: rgb(139, 230, 220);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(34, 167, 153, 0.5);
+    width: 6px;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(29, 211, 193, 0.6);
+    width: 6px;
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* For the main body/html scrollbar (window scrollbar) */
+html::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+html::-webkit-scrollbar-track {
+    background: #f0f0f0;
+}
+
+[data-theme="dark"] html::-webkit-scrollbar-track {
+    background: #2a2a2a;
+}
+
+html::-webkit-scrollbar-thumb {
+    background: rgba(34, 167, 153, 0.6);
+    border-radius: 4px;
+}
+
+[data-theme="dark"] html::-webkit-scrollbar-thumb {
+    background: rgba(29, 211, 193, 0.7);
+}
+
+html::-webkit-scrollbar-thumb:hover {
+    background: rgba(34, 167, 153, 0.8);
+}
+
+[data-theme="dark"] html::-webkit-scrollbar-thumb:hover {
+    background: rgba(29, 211, 193, 0.9);
+}
+
+
+
+/* Modern Scrollbar Theme */
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+    background-color: rgba(0, 102, 77, 0.1);
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgb(0, 83, 75);
+    border-radius: 2px;
+    transition: all 0.15s ease;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+    background: rgb(139, 230, 220);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(34, 167, 153, 0.8);
+    width: 6px;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(139, 230, 220, 0.9);
+    width: 6px;
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Main window scrollbar */
+html::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+html::-webkit-scrollbar-track {
+    background: #f0f0f0;
+}
+
+[data-theme="dark"] html::-webkit-scrollbar-track {
+    background: #2a2a2a;
+}
+
+html::-webkit-scrollbar-thumb {
+    background: rgba(34, 167, 153, 0.6);
+    border-radius: 4px;
+}
+
+[data-theme="dark"] html::-webkit-scrollbar-thumb {
+    background: rgba(29, 211, 193, 0.7);
+}
+
+html::-webkit-scrollbar-thumb:hover {
+    background: rgba(34, 167, 153, 0.8);
+}
+
+[data-theme="dark"] html::-webkit-scrollbar-thumb:hover {
+    background: rgba(29, 211, 193, 0.9);
+}
