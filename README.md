@@ -27,7 +27,7 @@
 
 **Learncurve** is a modern, AI-enhanced study platform designed to help students and learners collaborate effectively. Create or join study rooms, generate AI-powered learning roadmaps, take quizzes, manage tasks with Kanban boards, and stay connected with study partners in real-time.
 
-Whether you're studying solo or with a group, Aspyra keeps you focused and on track with intelligent tools and a beautiful, distraction-free interface.
+Whether you're studying solo or with a group, Learncurve keeps you focused and on track with intelligent tools and a beautiful, distraction-free interface.
 
 ---
 
