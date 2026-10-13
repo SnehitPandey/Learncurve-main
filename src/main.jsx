@@ -28,7 +28,7 @@ const Signup = lazy(() => import("./Pages/signup.jsx"));
 const About = lazy(() => import("./Pages/about.jsx"));
 const Contact = lazy(() => import("./Pages/contact.jsx"));
 const Landing = lazy(() => import("./Pages/focuskami.jsx"));
-const AuthCallback = lazy(() => import("./Pages/authCallback.jsx"));
+const AuthCallback = lazy(() => import("./Pages/AuthCallback.jsx"));
 const ForgotPassword = lazy(() => import("./Pages/forgotPassword.jsx"));
 const ResetPassword = lazy(() => import("./Pages/resetPassword.jsx"));
 const Notfound = lazy(() => import("./Pages/notfound.jsx"));
