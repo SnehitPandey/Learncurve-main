@@ -20,22 +20,22 @@ export default function Features() {
         {
             name: "Personalized Roadmaps",
             description: "Create tailored learning paths by setting goals, proficiency, time commitment, and preferences.",
-            img: "/images/roadmap-preview.png",
+            img: "/assets/images/personalized-roadmaps.png",
         },
         {
             name: "Collaborative Learning Rooms",
             description: "Join rooms with like-minded learners. Share progress, chat, and stay motivated together.",
-            img: "/images/room-preview.png",
+            img: "/assets/images/collaborate.png",
         },
         {
             name: "Track Daily Progress & Reminders",
             description: "Keep on top of daily tasks, quizzes, and smart reminders to sync with your group effectively.",
-            img: "/images/progress-preview.png",
+            img: "/assets/images/boost-progress.png",
         },
         {
             name: "Resource Library",
             description: "Access curated guides, notes, and checklists to support your learning journey.",
-            img: "/images/resources-preview.png",
+            img: "/assets/images/resources.png",
         },
     ];
 
