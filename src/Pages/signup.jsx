@@ -238,98 +238,13 @@ export default function Signup() {
 
           {/* Step 1: Initial Signup */}
           {step === 1 && (
-            <>
+            <div className="space-y-4 pt-2">
               <GoogleButton
                 text="Sign up with Google"
                 onClick={handleGoogleSignup}
                 isLoading={isLoading}
               />
-
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-text/20"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-background text-text/60">or sign up with email/phone</span>
-                </div>
-              </div>
-
-              <form onSubmit={handleInitialSignup} className="space-y-5">
-                <div>
-                  <label htmlFor="username" className="block mb-2 text-sm font-medium text-text">
-                    Username
-                  </label>
-                  <input
-                    id="username"
-                    name="username"
-                    type="text"
-                    required
-                    value={formData.username}
-                    onChange={handleInputChange}
-                    className="w-full px-4 py-3 rounded-xl border border-text/20 bg-text/5 text-text 
-                               placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary 
-                               transition-colors duration-200"
-                    placeholder="Choose a username"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="emailOrPhone" className="block mb-2 text-sm font-medium text-text">
-                    Email or Phone
-                  </label>
-                  <input
-                    id="emailOrPhone"
-                    name="emailOrPhone"
-                    type="text"
-                    required
-                    value={formData.emailOrPhone}
-                    onChange={handleInputChange}
-                    className="w-full px-4 py-3 rounded-xl border border-text/20 bg-text/5 text-text 
-                               placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary 
-                               transition-colors duration-200"
-                    placeholder="you@example.com or +1234567890"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="password" className="block mb-2 text-sm font-medium text-text">
-                    Password
-                  </label>
-                  <input
-                    id="password"
-                    name="password"
-                    type="password"
-                    required
-                    value={formData.password}
-                    onChange={handleInputChange}
-                    className="w-full px-4 py-3 rounded-xl border border-text/20 bg-text/5 text-text 
-                               placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary 
-                               transition-colors duration-200"
-                    placeholder="••••••••"
-                  />
-                </div>
-
-                <motion.button
-                  type="submit"
-                  disabled={isLoading}
-                  whileHover={{ scale: isLoading ? 1 : 1.02 }}
-                  whileTap={{ scale: isLoading ? 1 : 0.98 }}
-                  className="w-full py-3 rounded-xl font-semibold bg-primary text-alt 
-                             hover:bg-primary/90 shadow-lg shadow-primary/25 
-                             disabled:opacity-50 disabled:cursor-not-allowed 
-                             transition-all duration-200"
-                >
-                  {isLoading ? (
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-alt/30 border-t-alt rounded-full animate-spin"></div>
-                      Sending Code...
-                    </div>
-                  ) : (
-                    "Sign Up"
-                  )}
-                </motion.button>
-              </form>
-            </>
+            </div>
           )}
 
           {/* Step 2: Verification */}

@@ -1,1 +1,3 @@
-/* /index.html 200
+/api/*  https://learncurve.onrender.com/api/:splat  200
+/socket.io/*  https://learncurve.onrender.com/socket.io/:splat  200
+/*  /index.html  200

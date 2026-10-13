@@ -114,93 +114,13 @@ export default function Login() {
           </div>
         )}
 
-        <GoogleButton
-          text="Continue with Google"
-          onClick={handleGoogleLogin}
-          isLoading={isLoading}
-        />
-
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-text/20"></div>
-          </div>
-          <div className="relative flex justify-center text-sm">
-            <span className="px-2 bg-background text-text/60">or continue with email</span>
-          </div>
+        <div className="space-y-4 pt-2">
+          <GoogleButton
+            text="Continue with Google"
+            onClick={handleGoogleLogin}
+            isLoading={isLoading}
+          />
         </div>
-
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label htmlFor="email" className="block mb-2 text-sm font-medium text-text">
-              Email Address
-            </label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              required
-              value={formData.email}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 rounded-xl border border-text/20 bg-text/5 text-text 
-                         placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary 
-                         transition-colors duration-200"
-              placeholder="you@example.com"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block mb-2 text-sm font-medium text-text">
-              Password
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              required
-              value={formData.password}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 rounded-xl border border-text/20 bg-text/5 text-text 
-                         placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary 
-                         transition-colors duration-200"
-              placeholder="••••••••"
-            />
-          </div>
-
-          <div className="flex items-center justify-between">
-            <label className="flex items-center">
-              <input
-                id="rememberMe"
-                name="rememberMe"
-                type="checkbox"
-                checked={formData.rememberMe}
-                onChange={handleInputChange}
-                className="rounded border-text/30 text-primary focus:ring-primary/50 bg-text/5"
-              />
-              <span className="ml-2 text-sm text-text/70">Remember me</span>
-            </label>
-            <NavLink to="/forgot-password" className="text-sm text-primary hover:text-primary/80 transition-colors">
-              Forgot password?
-            </NavLink>
-          </div>
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full py-3 rounded-xl font-semibold bg-primary text-alt 
-                       hover:bg-primary/90 shadow-lg shadow-primary/25 
-                       disabled:opacity-50 disabled:cursor-not-allowed 
-                       transition-all duration-200"
-          >
-            {isLoading ? (
-              <div className="flex items-center justify-center gap-2">
-                <div className="w-4 h-4 border-2 border-alt/30 border-t-alt rounded-full animate-spin"></div>
-                Signing in...
-              </div>
-            ) : (
-              "Sign In"
-            )}
-          </button>
-        </form>
 
         <div className="text-center">
           <p className="text-sm text-text/60">
