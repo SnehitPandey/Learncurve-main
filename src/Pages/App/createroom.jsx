@@ -1,32 +1,17 @@
 // Components/room/CreateRoom.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import {
-    ArrowRight,
-    ArrowLeft,
-    Target,
-    Clock,
-    Users,
-    CheckCircle,
-    Brain,
-    Calendar,
-    Sparkles,
-    Eye,
-    UserPlus,
-    Search,
-    Star
-} from "lucide-react";
+import { 
+    ArrowRight, ArrowLeft, Target, Clock, Users, CheckCircle, Brain, Sparkles, Eye, Search } from "lucide-react";
 
 import RoomSteps from "../../Components/App/newrooms/roomSteps";
 import AISummarizer from "../../Components/App/newrooms/AISummarizer";
 import CreatedRoom from "../../Components/App/newrooms/createdRoom";
 import RoomPreview from "../../Components/App/newrooms/roomPreview";
-import TagInput from "../../Components/App/newrooms/TagInput";
-import RoadmapViewer from "../../Components/App/newrooms/RoadmapViewer";
 import { Card, Button, Badge, Avatar, ProgressBar } from "../../Components/elements/elements";
-import { roomService } from "../../services/roomService";
-import { aiService } from "../../services/aiService";
+import { fetchRoomSummary } from "../../api/ai";
+import { createRoom as createRoomApi, listRooms } from "../../api/rooms";
 
 const CreateRoom = () => {
     const navigate = useNavigate();
@@ -34,29 +19,35 @@ const CreateRoom = () => {
     const [showPreview, setShowPreview] = useState(false);
     const [selectedRoom, setSelectedRoom] = useState(null);
     const [previewOpen, setPreviewOpen] = useState(false);
-    const [isCreating, setIsCreating] = useState(false);
-    const [error, setError] = useState("");
-
-    // Room limit state
-    const [roomLimit, setRoomLimit] = useState(null);
-    const [isCheckingLimit, setIsCheckingLimit] = useState(true);
-
-    // Form data state - Start with empty values, fill as user progresses
+    
+    // Form data state
     const [formData, setFormData] = useState({
         goal: "",
-        description: "",
         selectedTags: [],
-        proficiency: "",           // Empty - user must select
-        dailyTime: "",             // Empty - user must select
-        timeframe: "",             // Empty - user must select
-        learningStyle: "",         // Empty - user must select
-        availability: "",          // Empty - user must select
-        timezone: "IST",           // Keep default timezone
-        generateRoadmap: true      // Keep default
+        proficiency: "beginner",
+        dailyTime: "1hr",
+        timeframe: "1month",
+        learningStyle: "solo",
+        availability: "weekdays",
+        timezone: "IST",
+        goalType: "",
+        priorKnowledge: "",
+        outcome: ""
     });
 
     const [aiSummary, setAiSummary] = useState(null);
+    const [aiError, setAiError] = useState("");
     const [similarRooms, setSimilarRooms] = useState([]);
+    const [creatingRoom, setCreatingRoom] = useState(false);
+    const [createError, setCreateError] = useState("");
+    const cancelledRef = useRef(false);
+
+    // Mounted guard: this page unmounts whenever the user navigates away, and
+    // several async helpers used to setState afterwards.
+    useEffect(() => {
+        cancelledRef.current = false;
+        return () => { cancelledRef.current = true; };
+    }, []);
 
     const steps = [
         { id: 1, title: "Set a Goal", icon: Target },
@@ -66,46 +57,43 @@ const CreateRoom = () => {
         { id: 5, title: "AI Summary", icon: Sparkles }
     ];
 
-    // Check room limit on mount
-    useEffect(() => {
-        const checkLimit = async () => {
-            try {
-                setIsCheckingLimit(true);
-                const response = await roomService.checkRoomLimit();
-
-                console.log('🔍 Room limit check response:', response);
-
-                if (response.success) {
-                    setRoomLimit(response.data);
-                    console.log('📊 Room limit data:', response.data);
-                    console.log('🚫 Can create?', response.data.canCreate);
-                }
-            } catch (err) {
-                console.error('❌ Failed to check room limit:', err);
-            } finally {
-                setIsCheckingLimit(false);
+    const generateSimilarRooms = async () => {
+        if (cancelledRef.current) return;
+        try {
+            const query = formData.selectedTags?.[0] || formData.goal;
+            const res = await listRooms({ query, limit: 3 });
+            if (cancelledRef.current) return;
+            if (res && Array.isArray(res.rooms) && res.rooms.length > 0) {
+                const formatted = res.rooms.map(r => ({
+                    id: r.id,
+                    name: r.name || "Untitled Room",
+                    skill: r.skill || "General",
+                    pace: r.pace || "Moderate",
+                    members: r.memberCount ?? 0,
+                    maxMembers: r.maxMembers ?? 0,
+                    startDate: null,
+                    timeframe: r.timeframe || "Not set",
+                    description: r.description || "",
+                    tags: Array.isArray(r.tags) ? r.tags : [r.skill].filter(Boolean),
+                    schedule: r.schedule || "",
+                    progress: 0,
+                    difficulty: r.difficulty || "Not set",
+                    avatar: ((r.skill || r.name || "RM")).slice(0, 2).toUpperCase(),
+                    creator: null,
+                    isActive: true,
+                    learningGoals: [],
+                    prerequisites: [],
+                    memberProfiles: []
+                }));
+                setSimilarRooms(formatted);
+                return;
             }
-        };
-
-        checkLimit();
-    }, []);
-
-    const generateSimilarRooms = () => {
-        // No similar rooms feature yet - would require backend endpoint
-        const mockSimilarRooms = [];
-
-        const filtered = mockSimilarRooms.filter(room => {
-            const hasMatchingTags = room.tags.some(tag =>
-                formData.selectedTags.some(userTag =>
-                    userTag.toLowerCase().includes(tag.toLowerCase()) ||
-                    tag.toLowerCase().includes(userTag.toLowerCase())
-                )
-            );
-            const matchesDifficulty = room.difficulty.toLowerCase() === formData.proficiency.toLowerCase();
-            return hasMatchingTags || matchesDifficulty;
-        });
-
-        setSimilarRooms(filtered.slice(0, 3));
+            // No backend matches — show empty rather than fake rooms
+            setSimilarRooms([]);
+        } catch (err) {
+            console.warn("Could not load backend rooms for similarity check:", err);
+            setSimilarRooms([]);
+        }
     };
 
     const updateFormData = (key, value) => {
@@ -115,112 +103,113 @@ const CreateRoom = () => {
         }));
     };
 
-    const generateAISummary = async () => {
-        try {
-            setError(""); // Clear any previous errors
+    const buildFallbackSummary = (data) => {
+        const goal = (data?.goal || "Web Development").trim();
+        const style = data?.learningStyle || "group";
+        const roomSize = style === "solo" ? "Solo (1 learner)" : style === "pair" ? "Duo (2 learners)" : "Small Group (3-5 learners)";
+        const intensity = data?.dailyTime ? `${data.dailyTime}/day` : "Moderate (6 hrs/week)";
+        const schedule = data?.availability === "weekdays" 
+            ? "Weekdays (Mon-Fri) at 8 PM"
+            : data?.availability === "weekends"
+            ? "Weekends (Sat-Sun) at 10 AM"
+            : "Daily sessions at 8 PM";
 
-            // Calculate duration in days
-            const getDurationInDays = () => {
-                if (formData.timeframe?.startsWith('custom-')) {
-                    return parseInt(formData.timeframe.split('-')[1]);
-                }
-                const timeframeMap = {
-                    '2weeks': 14,
-                    '3weeks': 21,
-                    '1month': 30,
-                    '6weeks': 42,
-                    '2months': 60,
-                    '3months': 90,
-                    '4months': 120,
-                    '5months': 150,
-                    '6months': 180
-                };
-                return timeframeMap[formData.timeframe] || 30;
+        const roadmapPreview = [
+            `Foundations & Core Principles of ${goal}`,
+            `Practical Applications & Core Techniques in ${goal}`,
+            `Advanced Concepts, Tooling & Architecture`,
+            `Applied Capstone Project & Portfolio Synthesis`
+        ];
+
+        const subtopics = [
+            [`Introduction & Mental Models for ${goal}`, `Core Fundamentals and Environment Setup`, `Hands-on Beginner Exercises`],
+            [`Component Architecture and Patterns`, `Practical Workflow and Essential Libraries`, `Intermediate Mini-Project Sprint`],
+            [`Advanced Techniques and Edge Cases`, `Performance Optimization & Debugging`, `Real-World Application Design`],
+            [`Capstone Project Architecture`, `Implementation and Testing Verification`, `Project Polish, Presentation & Wrap-up`]
+        ];
+
+        return {
+            roomName: `${goal} Mastery Group`,
+            estimatedGain: "+35% Skill Boost",
+            suggestedRoomSize: roomSize,
+            studyIntensity: intensity,
+            schedule,
+            roadmapPreview,
+            subtopics,
+            modules: [],
+            budget: null,
+            generatedBy: "template"
+        };
+    };
+
+    const skipOrUseTemplate = () => {
+        const fallback = buildFallbackSummary(formData);
+        setAiSummary(fallback);
+        setAiError("");
+        generateSimilarRooms();
+    };
+
+    const generateAISummary = async () => {
+        if (cancelledRef.current) return;
+        setAiError("");
+        try {
+            const payload = {
+                goal: formData.goal || "Web Development",
+                tags: formData.selectedTags?.length ? formData.selectedTags : [formData.goal || "Web Development"],
+                proficiency: formData.proficiency,
+                dailyTime: formData.dailyTime,
+                timeframe: formData.timeframe,
+                learningStyle: formData.learningStyle,
+                availability: formData.availability,
+                timezone: formData.timezone,
+                goalType: formData.goalType || undefined,
+                priorKnowledge: formData.priorKnowledge || undefined,
+                outcome: formData.outcome || undefined
             };
 
-            const durationDays = getDurationInDays();
+            // Bounded 10s timeout so user is never stuck in constant loading
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("AI generation timed out")), 10000)
+            );
 
-            // Call real AI API
-            const response = await aiService.generateRoomSummary({
-                roomTitle: formData.goal,
-                description: formData.description,
-                topics: formData.selectedTags,
-                durationDays: durationDays,
-                skillLevel: formData.proficiency,
-                dailyTime: formData.dailyTime,
-                goal: formData.goal
-            });
+            const res = await Promise.race([
+                fetchRoomSummary(payload),
+                timeoutPromise
+            ]);
 
-            if (response.success && response.summary) {
-                // Transform AI response to match expected format
-                const aiData = response.summary;
-                const summary = {
-                    // AI-generated content
-                    aiSummary: aiData.summary,
-                    aiFeedback: aiData.feedback,
-                    estimatedCompletion: aiData.estimatedCompletion,
-                    intensityLevel: aiData.intensityLevel,
-                    recommendations: aiData.recommendations || [],
-
-                    // Keep some calculated values for display
-                    estimatedGain: `${aiData.estimatedCompletion} achievable`,
-                    roadmapPreview: [
-                        `${formData.selectedTags.slice(0, 3).join(', ')} learning path`,
-                        `${Math.ceil(durationDays / 7)} weeks structured journey`,
-                        `${formData.dailyTime} daily commitment`,
-                        `${formData.learningStyle} learning approach`
-                    ],
-                    suggestedRoomSize: formData.learningStyle === 'solo' ? '1-2 members' :
-                        formData.learningStyle === 'pair' ? '2-3 members' : '4-6 members',
-                    studyIntensity: `${aiData.intensityLevel} (${formData.dailyTime} daily)`,
-                    roomName: formData.goal,
-                    schedule: formData.availability === "weekdays" ? "Weekdays" :
-                        formData.availability === "weekends" ? "Weekends" : "Flexible schedule"
-                };
-
-                setAiSummary(summary);
+            if (cancelledRef.current) return;
+            const data = res?.data || res;
+            if (data && (data.estimatedGain || data.roomName || Array.isArray(data.roadmapPreview))) {
+                const fallback = buildFallbackSummary(formData);
+                setAiSummary({
+                    estimatedGain: data.estimatedGain || fallback.estimatedGain,
+                    roadmapPreview: Array.isArray(data.roadmapPreview) && data.roadmapPreview.length > 0
+                        ? data.roadmapPreview
+                        : fallback.roadmapPreview,
+                    suggestedRoomSize: data.suggestedRoomSize || fallback.suggestedRoomSize,
+                    studyIntensity: data.studyIntensity || fallback.studyIntensity,
+                    roomName: data.roomName || fallback.roomName,
+                    schedule: data.schedule || fallback.schedule,
+                    budget: data.budget || null,
+                    subtopics: Array.isArray(data.subtopics) && data.subtopics.length > 0
+                        ? data.subtopics
+                        : fallback.subtopics,
+                    modules: Array.isArray(data.modules) ? data.modules : [],
+                    generatedBy: data.generatedBy || "ai"
+                });
                 generateSimilarRooms();
-            } else {
-                throw new Error("Failed to generate AI summary");
+                return;
             }
         } catch (err) {
-            console.error("AI Summary generation error:", err);
-
-            // Fallback to basic summary if AI fails
-            const durationDays = getDurationInDays();
-            const weeks = Math.ceil(durationDays / 7);
-            const summary = {
-                aiSummary: `You're planning to learn ${formData.selectedTags.join(', ')} over ${weeks} weeks as a ${formData.proficiency} learner.`,
-                aiFeedback: "AI summarizer is temporarily unavailable. Your learning plan looks good!",
-                estimatedCompletion: "Unable to estimate",
-                intensityLevel: "Moderate",
-                recommendations: ["Focus on consistent daily practice", "Break topics into smaller milestones"],
-                estimatedGain: `Progress from ${formData.proficiency} level in ${weeks} weeks`,
-                roadmapPreview: [
-                    `${formData.selectedTags.slice(0, 3).join(', ')} learning path`,
-                    `${weeks} weeks structured journey`,
-                    `${formData.dailyTime} daily commitment`,
-                    `${formData.learningStyle} learning approach`
-                ],
-                suggestedRoomSize: '4-6 members',
-                studyIntensity: `Moderate (${formData.dailyTime} daily)`,
-                roomName: formData.goal,
-                schedule: "Flexible schedule"
-            };
-            setAiSummary(summary);
-            generateSimilarRooms();
+            console.warn("AI summary API unavailable or timed out:", err);
         }
 
-        function getDurationInDays() {
-            if (formData.timeframe?.startsWith('custom-')) {
-                return parseInt(formData.timeframe.split('-')[1]);
-            }
-            const timeframeMap = {
-                '2weeks': 14, '3weeks': 21, '1month': 30, '6weeks': 42,
-                '2months': 60, '3months': 90, '4months': 120, '5months': 150, '6months': 180
-            };
-            return timeframeMap[formData.timeframe] || 30;
-        }
+        if (cancelledRef.current) return;
+        // Fall back to structured topic-aware curriculum based on user's goal
+        const fallback = buildFallbackSummary(formData);
+        setAiSummary(fallback);
+        setAiError("AI took longer than expected — loaded standard curriculum for your goal.");
+        generateSimilarRooms();
     };
 
     const nextStep = () => {
@@ -243,70 +232,52 @@ const CreateRoom = () => {
     };
 
     const createRoom = async () => {
-        setIsCreating(true);
-        setError("");
-
+        setCreatingRoom(true);
+        setCreateError("");
         try {
-            // Validate tags
-            if (formData.selectedTags.length === 0) {
-                throw new Error("Please add at least one learning topic tag");
-            }
+            const maxMembers = (() => {
+                switch (formData.learningStyle) {
+                    case "solo": return 1;
+                    case "pair": return 2;
+                    case "group": return 5;
+                    default: return 8;
+                }
+            })();
 
-            // Calculate duration in days from timeframe
-            const timeframeMap = {
-                '2weeks': 14,
-                '3weeks': 21,
-                '1month': 30,
-                '6weeks': 42,
-                '2months': 60,
-                '3months': 90,
-                '4months': 120,
-                '5months': 150,
-                '6months': 180
+            const payload = {
+                name: aiSummary?.roomName || `${formData.goal || "New"} Mastery Group`,
+                skill: formData.selectedTags?.[0] || formData.goal || "Web Development",
+                category: formData.selectedTags?.[0] || formData.goal || "Web Development",
+                description: aiSummary?.estimatedGain || formData.goal || "Collaborative study room",
+                tags: formData.selectedTags?.length ? formData.selectedTags : [formData.goal || "Study"],
+                pace: aiSummary?.studyIntensity || "Moderate",
+                difficulty: formData.proficiency ? (formData.proficiency.charAt(0).toUpperCase() + formData.proficiency.slice(1)) : "Beginner",
+                timeframe: formData.timeframe || "1month",
+                dailyTime: formData.dailyTime || "",
+                learningStyle: formData.learningStyle || "solo",
+                maxMembers,
+                availability: formData.availability || "anytime",
+                schedule: aiSummary?.schedule || "",
+                goalType: formData.goalType || undefined,
+                priorKnowledge: formData.priorKnowledge || undefined,
+                outcome: formData.outcome || undefined,
+                modules: Array.isArray(aiSummary?.modules) && aiSummary.modules.length > 0 ? aiSummary.modules : undefined
             };
-
-            let durationDays = 30; // default
-            if (formData.timeframe?.startsWith('custom-')) {
-                durationDays = parseInt(formData.timeframe.split('-')[1]);
-            } else {
-                durationDays = timeframeMap[formData.timeframe] || 30;
+            const res = await createRoomApi(payload);
+            const createdId = res?.room?.id || res?.data?.id || res?.id;
+            if (!createdId) {
+                // Never navigate to a fabricated id — it would 404 while the
+                // failure looked like success.
+                setCreateError("The room was created but the server returned no id. Check the rooms list.");
+                setCreatingRoom(false);
+                return;
             }
-
-            // Create room using real API with new parameters
-            const response = await roomService.createRoom(
-                formData.goal, // title
-                formData.description, // description
-                formData.selectedTags, // tags
-                formData.proficiency, // skillLevel (Beginner/Intermediate/Advanced)
-                6, // maxSeats - default
-                formData.generateRoadmap, // generateRoadmap
-                durationDays // durationDays
-            );
-
-            const roomData = response.room || response.data;
-            if (response.success && roomData) {
-                console.log("Room created:", roomData);
-                console.log("Roadmap:", roomData.roadmap);
-
-                // Trigger room list refresh
-                window.dispatchEvent(new CustomEvent('roomListChanged'));
-
-                // Navigate to the newly created room
-                navigate(`/room/${roomData.id || roomData._id}`);
-            } else {
-                throw new Error("Failed to create room");
-            }
+            navigate(`/room/${createdId}`);
         } catch (err) {
-            console.error("Create room error:", err);
-
-            // Check if it's a room limit error
-            if (err.response?.status === 403 || err.message?.includes('limit reached')) {
-                setError("Free plan limit reached. You can join or create a maximum of 5 rooms. Upgrade to join more rooms.");
-            } else {
-                setError(err.message || "Failed to create room. Please try again.");
-            }
+            console.error("Failed to create room via backend:", err);
+            setCreateError(err?.message || "Could not create the room. Please try again.");
         } finally {
-            setIsCreating(false);
+            setCreatingRoom(false);
         }
     };
 
@@ -330,7 +301,7 @@ const CreateRoom = () => {
     const canProceedToNext = () => {
         switch (currentStep) {
             case 1:
-                return formData.goal.trim().length > 0 && formData.selectedTags.length > 0;
+                return formData.goal.trim().length > 0;
             case 2:
                 return formData.proficiency !== "";
             case 3:
@@ -356,100 +327,19 @@ const CreateRoom = () => {
                 aiSummary={aiSummary}
                 onBack={() => setShowPreview(false)}
                 onCreateRoom={createRoom}
+                creating={creatingRoom}
+                createError={createError}
             />
-        );
-    }
-
-    // Show loading state while checking limit
-    if (isCheckingLimit) {
-        return (
-            <div className="min-h-screen bg-gradient transition-colors duration-300 md:ml-20 mb-20 md:mb-0 flex items-center justify-center">
-                <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-                    <p className="text-text/60">Loading...</p>
-                </div>
-            </div>
-        );
-    }
-
-    // Show limit reached UI if user has reached max rooms
-    console.log('🎯 Rendering - roomLimit:', roomLimit);
-    console.log('🎯 Rendering - canCreate:', roomLimit?.canCreate);
-
-    if (roomLimit && !roomLimit.canCreate) {
-        console.log('🚫 BLOCKING UI - User has reached room limit!');
-        return (
-            <div className="min-h-screen bg-gradient transition-colors duration-300 md:ml-20 mb-20 md:mb-0">
-                <div className="max-w-2xl mx-auto px-4 py-16">
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="bg-background rounded-2xl shadow-2xl p-8 text-center border border-text/10"
-                    >
-                        {/* Icon */}
-                        <div className="mb-6">
-                            <div className="w-20 h-20 mx-auto bg-gradient-to-br from-primary/20 to-secondary/20 rounded-full flex items-center justify-center">
-                                <Star className="w-10 h-10 text-primary" />
-                            </div>
-                        </div>
-
-                        {/* Title */}
-                        <h1 className="text-3xl font-bold text-text mb-4">Room Limit Reached</h1>
-
-                        {/* Message */}
-                        <p className="text-text/70 text-lg mb-2">
-                            You've reached the maximum of <span className="font-bold text-primary">{roomLimit.maxRooms} rooms</span> on the free plan.
-                        </p>
-                        <p className="text-text/60 mb-8">
-                            Currently in {roomLimit.currentRooms} active room{roomLimit.currentRooms !== 1 ? 's' : ''}.
-                        </p>
-
-                        {/* Coming Soon Badge */}
-                        <div className="inline-block mb-8">
-                            <Badge variant="warning" className="text-lg px-6 py-2">
-                                <Sparkles className="w-5 h-5 mr-2 inline" />
-                                Learncurve Pro - Coming Soon
-                            </Badge>
-                        </div>
-
-                        {/* Features Preview */}
-                        <div className="bg-background/50 rounded-xl p-6 mb-8 border border-text/5">
-                            <h3 className="font-semibold text-text mb-4">Learncurve Pro will include:</h3>
-                            <ul className="text-left space-y-3 text-text/70">
-                                <li className="flex items-start">
-                                    <CheckCircle className="w-5 h-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                                    <span>Unlimited room creation</span>
-                                </li>
-                                <li className="flex items-start">
-                                    <CheckCircle className="w-5 h-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                                    <span>Advanced AI-powered learning insights</span>
-                                </li>
-                                <li className="flex items-start">
-                                    <CheckCircle className="w-5 h-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                                    <span>Priority support and exclusive features</span>
-                                </li>
-                            </ul>
-                        </div>
-
-                        {/* Actions */}
-                        <div className="flex justify-center">
-                            <Button
-                                variant="outline"
-                                onClick={() => navigate('/home')}
-                                className="flex items-center gap-2"
-                            >
-                                <ArrowLeft className="w-4 h-4" />
-                                Back to Home
-                            </Button>
-                        </div>
-                    </motion.div>
-                </div>
-            </div>
         );
     }
 
     return (
         <div className="min-h-screen bg-gradient transition-colors duration-300 md:ml-20 mb-20 md:mb-0">
+            {aiError && (
+                <div className="mx-4 mt-4 rounded-xl border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-sm text-orange-500">
+                    {aiError}
+                </div>
+            )}
             {/* Header */}
             <motion.div
                 initial={{ opacity: 0, y: -20 }}
@@ -479,10 +369,11 @@ const CreateRoom = () => {
                                         transition={{ delay: index * 0.1, duration: 0.3 }}
                                     >
                                         <motion.div
-                                            className={`flex items-center justify-center w-10 h-10 rounded-full border-2 transition-all duration-300 cursor-pointer ${step.id <= currentStep
+                                            className={`flex items-center justify-center w-10 h-10 rounded-full border-2 transition-all duration-300 cursor-pointer ${
+                                                step.id <= currentStep
                                                     ? 'bg-primary border-primary text-white shadow-lg'
                                                     : 'border-text/30 text-text/50 bg-background'
-                                                }`}
+                                            }`}
                                             animate={{
                                                 scale: step.id === currentStep ? 1.15 : 1,
                                                 y: step.id === currentStep ? -2 : 0,
@@ -548,11 +439,11 @@ const CreateRoom = () => {
                                 <motion.div
                                     className="h-full bg-gradient-to-r from-primary via-primary to-primary/80 rounded-full relative"
                                     initial={{ width: "0%" }}
-                                    animate={{
-                                        width: `${((currentStep - 1) / (steps.length - 1)) * 100}%`
+                                    animate={{ 
+                                        width: `${((currentStep - 1) / (steps.length - 1)) * 100}%` 
                                     }}
-                                    transition={{
-                                        duration: 0.6,
+                                    transition={{ 
+                                        duration: 0.6, 
                                         ease: "easeOut",
                                         delay: 0.1
                                     }}
@@ -575,8 +466,9 @@ const CreateRoom = () => {
                             {steps.map((step, index) => (
                                 <motion.div
                                     key={`marker-${step.id}`}
-                                    className={`absolute top-1/2 transform -translate-y-1/2 -translate-x-1/2 w-1 h-1 rounded-full transition-all duration-300 ${step.id <= currentStep ? 'bg-white' : 'bg-text/30'
-                                        }`}
+                                    className={`absolute top-1/2 transform -translate-y-1/2 -translate-x-1/2 w-1 h-1 rounded-full transition-all duration-300 ${
+                                        step.id <= currentStep ? 'bg-white' : 'bg-text/30'
+                                    }`}
                                     style={{ left: `${getStepPosition(step.id)}%` }}
                                     initial={{ scale: 0 }}
                                     animate={{ scale: 1 }}
@@ -589,8 +481,8 @@ const CreateRoom = () => {
                     {/* Navigation Buttons - Only show when not on step 5 */}
                     {currentStep < steps.length && (
                         <div className="flex items-center justify-between">
-                            <Button
-                                variant="ghost"
+                            <Button 
+                                variant="ghost" 
                                 onClick={prevStep}
                                 disabled={currentStep === 1}
                                 className="flex items-center gap-2"
@@ -599,8 +491,8 @@ const CreateRoom = () => {
                                 Previous
                             </Button>
 
-                            <Button
-                                variant="primary"
+                            <Button 
+                                variant="primary" 
                                 onClick={nextStep}
                                 disabled={!canProceedToNext()}
                                 className="flex items-center gap-2"
@@ -610,12 +502,12 @@ const CreateRoom = () => {
                             </Button>
                         </div>
                     )}
-
+                    
                     {/* Only show Previous button on step 5 */}
                     {currentStep === steps.length && (
                         <div className="flex items-center justify-start">
-                            <Button
-                                variant="ghost"
+                            <Button 
+                                variant="ghost" 
                                 onClick={prevStep}
                                 className="flex items-center gap-2"
                             >
@@ -642,11 +534,14 @@ const CreateRoom = () => {
                                     transition={{ duration: 0.3 }}
                                     className="h-full"
                                 >
-                                    <RoomSteps
+                                    <RoomSteps 
                                         currentStep={currentStep}
                                         formData={formData}
                                         updateFormData={updateFormData}
                                         aiSummary={aiSummary}
+                                        aiError={aiError}
+                                        onRetryAi={generateAISummary}
+                                        onUseTemplate={skipOrUseTemplate}
                                         onProceedToPreview={proceedToPreview}
                                     />
                                 </motion.div>
@@ -657,7 +552,7 @@ const CreateRoom = () => {
                     {/* AI Summarizer */}
                     <div className="w-full lg:w-80">
                         <Card className="p-4 md:p-6 min-h-[400px]">
-                            <AISummarizer
+                            <AISummarizer 
                                 formData={formData}
                                 currentStep={currentStep}
                                 aiSummary={aiSummary}

@@ -3,22 +3,37 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Send, Smile, Paperclip, Minimize2, Maximize2 } from "lucide-react";
 import EmojiPicker from 'emoji-picker-react';
-import { chatService } from "../../../services/chatService";
-import { socketService } from "../../../services/socketService";
+import { getRoomMessages, sendRoomMessage } from "../../../api/chat";
+import { getSocket } from "../../../sockets/socketClient";
 
-const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCount = 0, totalMembers = 0, roomId }) => {
+// Local ids and the merge rules now live in utils/chatMessages so the modal and
+// the room overlay cannot drift — the overlay previously had its own id scheme
+// and never reconciled at all, which is how one sent message became three rows.
+import { confirmLocalMessage, createLocalId, reconcileMessage } from "../../../utils/chatMessages";
+const ChatModal = ({ isOpen, onClose, roomName = "Study Room", roomId, onNewMessage, onMessagesRead }) => {
+    // Held in refs so the socket effect can call the latest callbacks without
+    // taking them as dependencies (which would re-join the room on every
+    // parent render whenever the parent passes a fresh closure).
+    const onNewMessageRef = useRef(onNewMessage);
+    const onMessagesReadRef = useRef(onMessagesRead);
+    useEffect(() => {
+        onNewMessageRef.current = onNewMessage;
+        onMessagesReadRef.current = onMessagesRead;
+    }, [onNewMessage, onMessagesRead]);
+
     const [message, setMessage] = useState("");
     const [isMinimized, setIsMinimized] = useState(false);
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const [size, setSize] = useState({ width: 600, height: 700 });
     const [isResizing, setIsResizing] = useState(false);
-    const [resizeDirection, setResizeDirection] = useState('');
-    const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+    const [onlineCount, setOnlineCount] = useState(1);
+
     
     const messagesEndRef = useRef(null);
     const textareaRef = useRef(null);
     const emojiPickerRef = useRef(null);
     const chatRef = useRef(null);
+    const resizeOriginRef = useRef(null);
 
     // Dynamic max sizes based on viewport
     const getMaxSizes = useCallback(() => ({
@@ -26,130 +41,128 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
         maxHeight: window.innerHeight - 40
     }), []);
 
-    // Messages state - populated from backend/socket
+    // Sample messages
     const [messages, setMessages] = useState([]);
-    const [typingUsers, setTypingUsers] = useState([]);
-    
-    // Get current user info
-    const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-    
-    // Typing timeout ref
-    const typingTimeoutRef = useRef(null);
+    // True only for the very first fetch; afterwards the optimistic list is
+    // already on screen, so a spinner would be a regression.
+    const [messagesLoading, setMessagesLoading] = useState(true);
 
-    // Fetch chat history when modal opens
+    // Fetch messages from backend — backend returns {userName,content,createdAt}
     useEffect(() => {
+        // The modal component is always mounted by room.jsx and only returns null
+        // after its hooks have run. Without this guard the socket would join the
+        // room, register listeners and start polling even though chat was closed.
+        if (!isOpen || !roomId) return undefined;
+
+        let isMounted = true;
+        const getCurrentUserId = () => {
+            try {
+                const raw = localStorage.getItem("user");
+                if (raw) { const u = JSON.parse(raw); return u.id || u._id || null; }
+            } catch {
+                // Corrupt/absent localStorage — treat as signed out.
+            }
+            return null;
+        };
         const fetchMessages = async () => {
             if (!isOpen || !roomId) return;
-            
+            setMessagesLoading(true);
             try {
-                setIsLoadingMessages(true);
-                const response = await chatService.getMessages(roomId, { limit: 50, order: 'asc' });
-                
-                if (response.success && response.messages) {
-                    const formattedMessages = response.messages.map(msg => ({
-                        id: msg._id || msg.id || Date.now().toString(),
-                        userId: msg.user?._id || msg.senderId,
-                        user: msg.user?.name || msg.senderName || 'Unknown',
-                        avatar: msg.user?.avatarUrl || msg.user?.profilePic || msg.user?.customAvatarURL || msg.avatar || null,
-                        message: msg.content,
-                        timestamp: new Date(msg.timestamp || msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                        isCurrentUser: (msg.user?._id || msg.senderId) === currentUser.id
-                    }));
-                    setMessages(formattedMessages);
+                const res = await getRoomMessages(roomId);
+                const backendMsgs = res?.messages || res?.data;
+                if (Array.isArray(backendMsgs) && isMounted) {
+                    const myId = getCurrentUserId();
+                    const formatted = backendMsgs.map(m => {
+                        const name = m.userName || m.sender_name || "Peer";
+                        const isMine = (m.is_current_user !== undefined)
+                            ? !!m.is_current_user
+                            : (myId ? (m.userId === myId || m.user_id === myId) : false);
+                        return {
+                            id: m._id || m.id,
+                            user: isMine ? "You" : name,
+                            avatar: (isMine ? "YOU" : String(name)).slice(0, 2).toUpperCase(),
+                            // The API has always returned `userAvatar`; it was never
+                            // read, so every chat bubble fell back to initials.
+                            avatarUrl: m.userAvatar || m.avatar || m.avatarUrl || "",
+                            message: m.content,
+                            timestamp: (m.createdAt || m.created_at) ? new Date(m.createdAt || m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Just now",
+                            isCurrentUser: !!isMine
+                        };
+                    });
+                    if (isMounted) {
+                        // Keep not-yet-confirmed optimistic messages so a poll cannot
+                        // make a just-sent message blink out of existence.
+                        setMessages(prev => {
+                            const stillPending = prev.filter(m =>
+                                m.pending && !formatted.some(f => f.isCurrentUser && f.message === m.message)
+                            );
+                            return [...formatted, ...stillPending];
+                        });
+                        if (onMessagesReadRef.current) onMessagesReadRef.current();
+                    }
                 }
-            } catch (error) {
-                console.error('Failed to fetch messages:', error);
+            } catch (err) {
+                console.warn("Chat history unavailable:", err?.message);
             } finally {
-                setIsLoadingMessages(false);
+                if (isMounted) setMessagesLoading(false);
             }
         };
 
         fetchMessages();
-    }, [isOpen, roomId, currentUser.id]);
 
-    // Listen for new messages via Socket.IO
-    useEffect(() => {
-        if (!isOpen || !roomId) return;
+        // Socket.IO listeners only. Room MEMBERSHIP is owned by the room page
+        // (`useRoomSocket` in Pages/App/room.jsx) for the whole visit, so the
+        // Kanban board and presence are live too — and so the join survives a
+        // reconnect. This modal deliberately does not join or leave: doing so
+        // would mean realtime presence started and stopped with the chat panel,
+        // and closing the modal would un-join every other consumer in the room.
+        const socket = getSocket();
 
         const handleNewMessage = (msg) => {
-            console.log('New message received:', msg);
-            const formattedMessage = {
-                id: msg.id || Date.now().toString(),
-                userId: msg.userId || msg.senderId,
-                user: msg.username || msg.senderName || 'Unknown',
-                avatar: msg.avatar || null,
-                message: msg.content,
-                timestamp: new Date(msg.timestamp || msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                isCurrentUser: (msg.userId || msg.senderId) === currentUser.id
-            };
-            setMessages(prev => [...prev, formattedMessage]);
-        };
-
-        const handleSystemMessage = (data) => {
-            console.log('System message received:', data);
-            const systemMsg = {
-                id: Date.now().toString(),
-                userId: null,
-                user: 'System',
-                avatar: null,
-                message: data.type === 'join' 
-                    ? `${data.username} joined the room` 
-                    : `${data.username} left the room`,
-                timestamp: new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                isSystem: true,
-                isCurrentUser: false
-            };
-            setMessages(prev => [...prev, systemMsg]);
-        };
-
-        const handleTyping = (data) => {
-            if (data.userId === currentUser.id) return; // Ignore self
-            
-            if (data.isTyping) {
-                setTypingUsers(prev => {
-                    if (!prev.find(u => u.userId === data.userId)) {
-                        return [...prev, { userId: data.userId, username: data.username }];
-                    }
-                    return prev;
-                });
-            } else {
-                setTypingUsers(prev => prev.filter(u => u.userId !== data.userId));
+            if (msg && (msg.roomId === roomId || !msg.roomId)) {
+                const myId = getCurrentUserId();
+                const isMine = (myId && (msg.userId === myId || msg.user_id === myId));
+                const formatted = {
+                    id: msg.id || msg._id || createLocalId(),
+                    user: isMine ? "You" : (msg.userName || "Peer"),
+                    avatar: (isMine ? "YOU" : String(msg.userName || "PE")).slice(0, 2).toUpperCase(),
+                    avatarUrl: msg.userAvatar || msg.avatar || msg.avatarUrl || "",
+                    message: msg.content,
+                    timestamp: msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Just now",
+                    isCurrentUser: !!isMine
+                };
+                // Dedupes on server id AND collapses an unconfirmed local copy of
+                // the same message. Checking the id alone was not enough: the
+                // optimistic row carries a `local-…` id, so a confirmed copy
+                // looked like a brand new message and the sender saw theirs twice.
+                setMessages(prev => reconcileMessage(prev, formatted));
+                if (onNewMessageRef.current) onNewMessageRef.current(formatted);
             }
         };
 
-        socketService.onMessage(handleNewMessage);
-        socketService.onSystemMessageNew(handleSystemMessage);
-        socketService.onChatTyping(handleTyping);
-
-        return () => {
-            // Cleanup listeners when modal closes
-            socketService.socket?.off('NEW_MESSAGE', handleNewMessage);
-            socketService.socket?.off('chat:system', handleSystemMessage);
-            socketService.socket?.off('chat:typing', handleTyping);
+        const handlePresence = (data) => {
+            if (data && data.roomId === roomId && Array.isArray(data.onlineUserIds)) {
+                setOnlineCount(Math.max(1, data.onlineUserIds.length));
+            }
         };
-    }, [isOpen, roomId, currentUser.id]);
+
+        socket.on("new_message", handleNewMessage);
+        socket.on("user_presence", handlePresence);
+
+        const poll = setInterval(fetchMessages, 15000);
+        return () => {
+            isMounted = false;
+            clearInterval(poll);
+            socket.off("new_message", handleNewMessage);
+            socket.off("user_presence", handlePresence);
+        };
+    }, [isOpen, roomId]);
+
 
     // Auto-resize textarea function
     const handleTextareaChange = useCallback((e) => {
         const textarea = e.target;
-        const newValue = textarea.value;
-        setMessage(newValue);
-        
-        // Emit typing indicator
-        if (roomId && newValue.trim()) {
-            // Send typing=true
-            socketService.sendTyping(roomId, true);
-            
-            // Clear existing timeout
-            if (typingTimeoutRef.current) {
-                clearTimeout(typingTimeoutRef.current);
-            }
-            
-            // Set new timeout to send typing=false after 2 seconds
-            typingTimeoutRef.current = setTimeout(() => {
-                socketService.sendTyping(roomId, false);
-            }, 2000);
-        }
+        setMessage(textarea.value);
         
         // Reset height to auto to get the actual scroll height
         textarea.style.height = 'auto';
@@ -163,7 +176,7 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
             textarea.style.height = '120px';
             textarea.style.overflowY = 'auto';
         }
-    }, [roomId]);
+    }, []);
 
     // Auto-resize on message change (for emoji insertion)
     useEffect(() => {
@@ -195,17 +208,6 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
         };
     }, []);
 
-    // Cleanup when modal closes
-    useEffect(() => {
-        if (!isOpen && roomId) {
-            // Clear typing indicator
-            socketService.sendTyping(roomId, false);
-            if (typingTimeoutRef.current) {
-                clearTimeout(typingTimeoutRef.current);
-            }
-        }
-    }, [isOpen, roomId]);
-
     // Update max sizes when window resizes
     useEffect(() => {
         const handleResize = () => {
@@ -221,68 +223,66 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
         return () => window.removeEventListener('resize', handleResize);
     }, [getMaxSizes]);
 
-    // Resize functionality with max size constraints
+    // Resize functionality with max size constraints.
+    // mousedown only records the drag origin; the document listeners live in an
+    // effect keyed on isResizing so unmounting mid-drag always removes them.
     const handleMouseDown = useCallback((e, direction) => {
         e.preventDefault();
         setIsResizing(true);
-        setResizeDirection(direction);
-        
-        const startX = e.clientX;
-        const startY = e.clientY;
-        const startWidth = size.width;
-        const startHeight = size.height;
+        resizeOriginRef.current = {
+            direction,
+            startX: e.clientX,
+            startY: e.clientY,
+            width: size.width,
+            height: size.height,
+        };
+    }, [size]);
+
+    useEffect(() => {
+        if (!isResizing) return undefined;
+
         const { maxWidth, maxHeight } = getMaxSizes();
 
         const handleMouseMove = (e) => {
-            const deltaX = e.clientX - startX;
-            const deltaY = e.clientY - startY;
+            const origin = resizeOriginRef.current;
+            if (!origin) return;
 
-            let newWidth = startWidth;
-            let newHeight = startHeight;
+            const deltaX = e.clientX - origin.startX;
+            const deltaY = e.clientY - origin.startY;
+            const { direction } = origin;
+
+            let newWidth = origin.width;
+            let newHeight = origin.height;
 
             if (direction.includes('right')) {
-                newWidth = Math.max(400, Math.min(startWidth + deltaX, maxWidth));
+                newWidth = Math.max(400, Math.min(origin.width + deltaX, maxWidth));
             }
             if (direction.includes('left')) {
-                newWidth = Math.max(400, Math.min(startWidth - deltaX, maxWidth));
+                newWidth = Math.max(400, Math.min(origin.width - deltaX, maxWidth));
             }
             if (direction.includes('bottom')) {
-                newHeight = Math.max(300, Math.min(startHeight + deltaY, maxHeight));
+                newHeight = Math.max(300, Math.min(origin.height + deltaY, maxHeight));
             }
             if (direction.includes('top')) {
-                newHeight = Math.max(300, Math.min(startHeight - deltaY, maxHeight));
-            }
-
-            if (direction === 'top-left') {
-                newWidth = Math.max(400, Math.min(startWidth - deltaX, maxWidth));
-                newHeight = Math.max(300, Math.min(startHeight - deltaY, maxHeight));
-            }
-            if (direction === 'top-right') {
-                newWidth = Math.max(400, Math.min(startWidth + deltaX, maxWidth));
-                newHeight = Math.max(300, Math.min(startHeight - deltaY, maxHeight));
-            }
-            if (direction === 'bottom-left') {
-                newWidth = Math.max(400, Math.min(startWidth - deltaX, maxWidth));
-                newHeight = Math.max(300, Math.min(startHeight + deltaY, maxHeight));
-            }
-            if (direction === 'bottom-right') {
-                newWidth = Math.max(400, Math.min(startWidth + deltaX, maxWidth));
-                newHeight = Math.max(300, Math.min(startHeight + deltaY, maxHeight));
+                newHeight = Math.max(300, Math.min(origin.height - deltaY, maxHeight));
             }
 
             setSize({ width: newWidth, height: newHeight });
         };
 
         const handleMouseUp = () => {
+            resizeOriginRef.current = null;
             setIsResizing(false);
-            setResizeDirection('');
-            document.removeEventListener('mousemove', handleMouseMove);
-            document.removeEventListener('mouseup', handleMouseUp);
         };
 
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
-    }, [size, getMaxSizes]);
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isResizing, getMaxSizes]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -298,22 +298,46 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
         }
     }, [isOpen, isMinimized]);
 
-    const handleSendMessage = (e) => {
+    const handleSendMessage = async (e) => {
         e.preventDefault();
-        if (!message.trim() || !roomId) return;
+        const trimmed = message.trim();
+        if (!trimmed) return;
 
-        // Send message via Socket.IO
-        socketService.sendMessage(roomId, message.trim(), 'TEXT');
-        
-        // Clear typing indicator
-        socketService.sendTyping(roomId, false);
-        if (typingTimeoutRef.current) {
-            clearTimeout(typingTimeoutRef.current);
-        }
-        
-        // Clear input
+        // Exactly ONE persistence channel: the REST endpoint. Emitting over the
+        // socket as well would persist the same message twice (the socket handler
+        // writes its own ChatMessage) and the echo would race the local id away.
+        const localId = createLocalId();
+        const newMessage = {
+            id: localId,
+            user: "You",
+            avatar: "YO",
+            message: trimmed,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            isCurrentUser: true,
+            pending: true
+        };
+
+        setMessages(prev => [...prev, newMessage]);
         setMessage("");
         setShowEmojiPicker(false);
+
+        if (roomId) {
+            try {
+                const res = await sendRoomMessage(roomId, trimmed);
+                const saved = res?.message;
+
+                if (saved?.id || saved?._id) {
+                    // Reconcile on the id the server assigned to THIS message, and
+                    // collapse any copy the socket already delivered under it.
+                    setMessages(prev => confirmLocalMessage(prev, localId, saved, trimmed));
+                } else {
+                    setMessages(prev => prev.map(m => (m.id === localId ? { ...m, pending: false } : m)));
+                }
+            } catch (err) {
+                console.warn("Backend chat send note:", err?.message);
+                setMessages(prev => prev.map(m => (m.id === localId ? { ...m, pending: false, failed: true } : m)));
+            }
+        }
         
         // Reset textarea height and overflow
         if (textareaRef.current) {
@@ -459,9 +483,10 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
                                         className="text-xs"
                                         style={{ color: "rgba(var(--color-text-rgb), 0.6)" }}
                                     >
-                                        {`${onlineCount} members online`}{totalMembers ? ` · ${totalMembers} total` : ''}
+                                        {onlineCount} {onlineCount === 1 ? "member" : "members"} online
                                     </p>
                                 )}
+
                             </div>
                         </div>
                         <div className="flex items-center gap-1">
@@ -521,161 +546,74 @@ const ChatModal = ({ isOpen, onClose, roomName = "Frontend in 30 Days", onlineCo
                                 transition: "background-color 0.3s ease"
                             }}
                         >
-                            {messages.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                                    <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-                                        <Send size={32} style={{ color: "rgba(var(--color-primary-rgb), 0.5)" }} />
-                                    </div>
-                                    <h3 className="text-lg font-medium mb-2" style={{ color: "var(--color-text)" }}>
-                                        No Messages Yet
-                                    </h3>
-                                    <p className="text-sm" style={{ color: "rgba(var(--color-text-rgb), 0.6)" }}>
-                                        Start the conversation by sending a message below!
-                                    </p>
-                                </div>
-                            ) : (
-                                <AnimatePresence>
-                                    {messages.map((msg, index) => {
-                                        // Check if this is a system message
-                                        if (msg.isSystem) {
-                                            return (
-                                                <motion.div
-                                                    key={msg.id}
-                                                    variants={messageVariants}
-                                                    initial="hidden"
-                                                    animate="visible"
-                                                    className="flex justify-center my-2"
-                                                >
-                                                    <div 
-                                                        className="px-3 py-1 rounded-full text-xs"
-                                                        style={{
-                                                            backgroundColor: "rgba(var(--color-text-rgb), 0.05)",
-                                                            color: "rgba(var(--color-text-rgb), 0.6)"
-                                                        }}
-                                                    >
-                                                        {msg.message}
-                                                    </div>
-                                                </motion.div>
-                                            );
-                                        }
-                                        
-                                        // Regular user message
-                                        const isOwnMessage = msg.isCurrentUser;
-                                        
-                                        return (
-                                            <motion.div
-                                                key={msg.id}
-                                                variants={messageVariants}
-                                                initial="hidden"
-                                                animate="visible"
-                                                className={`flex ${isOwnMessage ? "justify-end" : "justify-start"} mb-3`}
-                                            >
-                                                <div className={`flex ${isOwnMessage ? "flex-row-reverse" : "flex-row"} items-start max-w-[75%] gap-2`}>
-                                                    {/* Avatar */}
-                                                    <div className="flex-shrink-0">
-                                                        {msg.avatar ? (
-                                                            <img 
-                                                                src={msg.avatar} 
-                                                                alt={msg.user}
-                                                                className="w-10 h-10 rounded-full object-cover"
-                                                                style={{
-                                                                    border: "2px solid rgba(var(--color-text-rgb), 0.1)"
-                                                                }}
-                                                                onError={(e) => {
-                                                                    // Fallback to initials if image fails to load
-                                                                    e.target.style.display = 'none';
-                                                                    e.target.nextSibling.style.display = 'flex';
-                                                                }}
-                                                            />
-                                                        ) : null}
-                                                        <div 
-                                                            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold"
-                                                            style={{
-                                                                display: msg.avatar ? 'none' : 'flex',
-                                                                backgroundColor: isOwnMessage 
-                                                                    ? "var(--color-primary)" 
-                                                                    : "rgba(var(--color-primary-rgb), 0.3)",
-                                                                color: isOwnMessage ? "var(--color-alt)" : "var(--color-text)",
-                                                                border: "2px solid rgba(var(--color-text-rgb), 0.1)"
-                                                            }}
-                                                        >
-                                                            {msg.user.charAt(0).toUpperCase()}
-                                                        </div>
-                                                    </div>
-                                                    
-                                                    {/* Message Content */}
-                                                    <div className="flex-1 min-w-0">
-                                                        {/* Username and Timestamp */}
-                                                        <div className={`flex items-center gap-2 mb-1 ${isOwnMessage ? "justify-end" : "justify-start"}`}>
-                                                            <span 
-                                                                className="text-xs font-semibold"
-                                                                style={{ color: "var(--color-text)" }}
-                                                            >
-                                                                {msg.user}
-                                                            </span>
-                                                            <span 
-                                                                className="text-xs"
-                                                                style={{ color: "rgba(var(--color-text-rgb), 0.5)" }}
-                                                            >
-                                                                {msg.timestamp}
-                                                            </span>
-                                                        </div>
-                                                        
-                                                        {/* Message Bubble */}
-                                                        <div 
-                                                            className={`px-3 py-2 rounded-lg break-words text-sm ${isOwnMessage ? "rounded-tr-none" : "rounded-tl-none"}`}
-                                                            style={{
-                                                                backgroundColor: isOwnMessage 
-                                                                    ? "var(--color-primary)" 
-                                                                    : "rgba(var(--color-text-rgb), 0.08)",
-                                                                color: isOwnMessage 
-                                                                    ? "var(--color-alt)" 
-                                                                    : "var(--color-text)",
-                                                                wordWrap: "break-word",
-                                                                overflowWrap: "break-word",
-                                                                hyphens: "auto",
-                                                                maxWidth: "100%"
-                                                            }}
-                                                        >
-                                                            {msg.message}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </motion.div>
-                                        );
-                                    })}
-                                    
-                                    {/* Typing indicator */}
-                                    {typingUsers.length > 0 && (
-                                        <motion.div
-                                            initial={{ opacity: 0, y: 10 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            exit={{ opacity: 0, y: 10 }}
-                                            className="flex gap-3 mt-2"
-                                        >
-                                            <div className="flex-shrink-0">
-                                                <div 
-                                                    className="w-8 h-8 rounded-full flex items-center justify-center text-xs"
+                            {messagesLoading && messages.length === 0 && (
+                                <p className="text-center text-xs text-text/40">Loading messages...</p>
+                            )}
+                            <AnimatePresence>
+                                {messages.map((msg) => (
+                                    <motion.div
+                                        key={msg.id}
+                                        variants={messageVariants}
+                                        initial="hidden"
+                                        animate="visible"
+                                        className="flex gap-3"
+                                    >
+                                        <div className="flex-shrink-0">
+                                            {/* Real photo when the member has one,
+                                                initials otherwise. Previously this
+                                                always rendered `msg.avatar`, which is
+                                                two letters of the name — so no chat
+                                                participant ever had a picture. */}
+                                            {msg.avatarUrl ? (
+                                                <img
+                                                    src={msg.avatarUrl}
+                                                    alt={msg.user}
+                                                    className="w-8 h-8 rounded-full object-cover"
+                                                    onError={(e) => {
+                                                        // A dead Supabase URL must not leave
+                                                        // a broken image icon in the list.
+                                                        e.currentTarget.style.display = "none";
+                                                    }}
+                                                />
+                                            ) : (
+                                                <div
+                                                    className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold"
                                                     style={{
-                                                        backgroundColor: "rgba(var(--color-primary-rgb), 0.2)",
-                                                        color: "var(--color-primary)"
+                                                        backgroundColor: msg.isCurrentUser
+                                                            ? "var(--color-primary)"
+                                                            : "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                                                        color: "white"
                                                     }}
                                                 >
-                                                    •••
+                                                    {msg.avatar}
                                                 </div>
-                                            </div>
-                                            <div className="flex-1 min-w-0 flex items-center">
+                                            )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 mb-1">
                                                 <span 
-                                                    className="text-xs italic"
-                                                    style={{ color: "rgba(var(--color-text-rgb), 0.6)" }}
+                                                    className="text-xs font-medium"
+                                                    style={{ color: "var(--color-text)" }}
                                                 >
-                                                    {typingUsers.map(u => u.username).join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
+                                                    {msg.user}
+                                                </span>
+                                                <span 
+                                                    className="text-xs"
+                                                    style={{ color: "rgba(var(--color-text-rgb), 0.5)" }}
+                                                >
+                                                    {msg.timestamp}
                                                 </span>
                                             </div>
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
-                            )}
+                                            <div 
+                                                className="text-sm break-words"
+                                                style={{ color: "var(--color-text)" }}
+                                            >
+                                                {msg.message}
+                                            </div>
+                                        </div>
+                                    </motion.div>
+                                ))}
+                            </AnimatePresence>
                             <div ref={messagesEndRef} />
                         </div>
                     )}

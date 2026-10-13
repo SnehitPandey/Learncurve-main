@@ -5,15 +5,14 @@ import {
     Book, HomeIcon, LogOut, Settings, User, Plus, UserPlus, X
 } from "lucide-react";
 import ThemeToggle from "../../elements/toggletheme";
-import NotificationCenter from "./NotificationCenter";
-import { roomService } from "../../../services/roomService";
-import { authService } from "../../../services/authService";
+import { getMyRooms } from "../../../api/rooms";
+import { clearAuth } from "../../../api/client";
+import { disconnectSocket } from "../../../sockets/socketClient";
 
 export default function AppBottomBar() {
     const navigate = useNavigate();
     const [roomsModalOpen, setRoomsModalOpen] = useState(false);
     const [profileModalOpen, setProfileModalOpen] = useState(false);
-    const [rooms, setRooms] = useState([]);
 
     useEffect(() => {
         if (roomsModalOpen || profileModalOpen) {
@@ -21,30 +20,8 @@ export default function AppBottomBar() {
         } else {
             document.body.style.overflow = "unset";
         }
+        return () => { document.body.style.overflow = "unset"; };
     }, [roomsModalOpen, profileModalOpen]);
-
-    // Fetch user's rooms
-    useEffect(() => {
-        const fetchRooms = async () => {
-            try {
-                const response = await roomService.getMyRooms();
-                if (response.success && response.rooms) {
-                    setRooms(response.rooms);
-                } else {
-                    setRooms([]);
-                }
-            } catch (error) {
-                console.error('Failed to fetch rooms:', error);
-                setRooms([]);
-            }
-        };
-
-        fetchRooms();
-        
-        // Refresh rooms every 30 seconds
-        const interval = setInterval(fetchRooms, 30000);
-        return () => clearInterval(interval);
-    }, []);
 
     const modalVariants = {
         closed: { opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } },
@@ -65,21 +42,36 @@ export default function AppBottomBar() {
         }),
     };
 
-    const handleLogout = async () => {
-        try {
-            // Use authService.logout() to properly clear tokens and user-specific data
-            await authService.logout();
-            // Navigate to landing page
-            navigate("/");
-            // Reload to clear any remaining state
-            window.location.reload();
-        } catch (error) {
-            console.error("Logout error:", error);
-            // Even if API call fails, clear local data and redirect
-            navigate("/");
-            window.location.reload();
-        }
+    const handleLogout = () => {
+        clearAuth();
+        // Drop the socket too — otherwise the authenticated connection stays
+        // open after logout.
+        disconnectSocket();
+        navigate("/");
     };
+
+    const [rooms, setRooms] = useState([]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const mapRooms = (list) => (Array.isArray(list) ? list : [])
+            .map(r => ({ id: r?.id || r?._id, name: r?.name || r?.title, icon: Book }))
+            .filter(r => Boolean(r.id)); // a malformed room would link to /room/undefined
+
+        // YOUR rooms, or none.
+        //
+        // Same defect as the desktop sidebar, which was fixed for exactly this
+        // reason: falling back to the public discovery feed put rooms belonging
+        // to other people into the navigation bar, where every entry looks like a
+        // shortcut to somewhere you are enrolled. Discovery has its own page.
+        getMyRooms()
+            .then(res => {
+                if (cancelled) return;
+                setRooms(mapRooms(res?.rooms));
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, []);
 
     return (
         <>
@@ -97,9 +89,6 @@ export default function AppBottomBar() {
                                 </div>
                             )}
                         </NavLink>
-
-                        {/* Notifications */}
-                        <NotificationCenter />
 
                         {/* Rooms Button */}
                         <button
@@ -177,8 +166,8 @@ export default function AppBottomBar() {
                                                     <Book size={20} className="text-text/70" />
                                                 </div>
                                                 <div className="flex-1 text-left">
-                                                    <h3 className="font-medium">{room.title}</h3>
-                                                    <p className="text-sm text-text/70">{room.memberCount} {room.memberCount === 1 ? 'member' : 'members'} • {room.status}</p>
+                                                    <h3 className="font-medium">{room.name}</h3>
+                                                    <p className="text-sm text-text/70">Active session</p>
                                                 </div>
                                             </motion.button>
                                         ))}
@@ -284,13 +273,14 @@ export default function AppBottomBar() {
                                                 initial="closed"
                                                 animate="open"
                                                 whileHover={{
-                                                    x: 5
+                                                    x: 5,
+                                                    backgroundColor: "rgba(var(--color-text-rgb), 0.1)",
                                                 }}
                                                 onClick={() => {
                                                     setProfileModalOpen(false);
                                                     item.action();
                                                 }}
-                                                className={`flex items-center gap-3 w-full px-4 py-3 text-sm text-text/80 hover:text-text hover:bg-white/5 transition-colors
+                                                className={`flex items-center gap-3 w-full px-4 py-3 text-sm text-text/80 hover:text-text transition-colors
                                                     ${item.border ? 'border-t border-text/10 mt-2 pt-2' : ''}`}
                                             >
                                                 <item.icon size={16} />

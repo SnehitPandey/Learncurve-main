@@ -1,30 +1,53 @@
 import React, { useEffect, useState } from "react";
 import { Sun, Moon } from "lucide-react";
 
+const THEME_KEY = "theme";
+
+const applyTheme = (theme) => {
+    document.documentElement.setAttribute("data-theme", theme);
+    // localStorage is the single persisted source of truth — the Settings page
+    // (Pages/App/settings.jsx) reads and writes the same key. Writing the
+    // attribute without persisting it made the two sources desync, so the theme
+    // reset or flipped unpredictably.
+    localStorage.setItem(THEME_KEY, theme);
+};
+
 const ThemeToggle = () => {
     const [dark, setDark] = useState(false);
     const [mounted, setMounted] = useState(false);
     const [hovered, setHovered] = useState(false);
 
     useEffect(() => {
-        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        const currentTheme = document.documentElement.getAttribute("data-theme");
-        
-        if (!currentTheme) {
-            const theme = prefersDark ? "dark" : "light";
-            document.documentElement.setAttribute("data-theme", theme);
-            setDark(theme === "dark");
+        const stored = localStorage.getItem(THEME_KEY);
+        const attr = document.documentElement.getAttribute("data-theme");
+
+        if (stored === "dark" || stored === "light") {
+            document.documentElement.setAttribute("data-theme", stored);
+            setDark(stored === "dark");
+        } else if (attr === "dark" || attr === "light") {
+            localStorage.setItem(THEME_KEY, attr);
+            setDark(attr === "dark");
         } else {
-            setDark(currentTheme === "dark");
+            const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+            const theme = prefersDark ? "dark" : "light";
+            applyTheme(theme);
+            setDark(theme === "dark");
         }
-        
+
         setMounted(true);
+    }, []);
+
+    // Pick up theme changes made elsewhere (e.g. the Settings page).
+    useEffect(() => {
+        const sync = () => setDark(document.documentElement.getAttribute("data-theme") === "dark");
+        window.addEventListener("storage", sync);
+        return () => window.removeEventListener("storage", sync);
     }, []);
 
     const toggleTheme = () => {
         const currentTheme = document.documentElement.getAttribute("data-theme");
         const newTheme = currentTheme === "dark" ? "light" : "dark";
-        document.documentElement.setAttribute("data-theme", newTheme);
+        applyTheme(newTheme);
         setDark(newTheme === "dark");
     };
 
@@ -38,6 +61,7 @@ const ThemeToggle = () => {
 
     return (
         <button
+            id="theme-toggle-btn"
             onClick={toggleTheme}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}

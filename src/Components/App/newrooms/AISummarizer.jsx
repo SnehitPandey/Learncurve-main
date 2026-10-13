@@ -4,32 +4,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Brain, Clock, Users, Target, CheckCircle } from "lucide-react";
 import { Badge } from "../../elements/elements";
 
-const AISummarizer = ({ formData, currentStep, aiSummary }) => {
+const AISummarizer = ({ formData, currentStep, totalSteps = 5, aiSummary }) => {
     const insights = useMemo(() => {
         const items = [];
         
-        // Only show if actually filled (not empty string or default value)
         if (formData.goal?.trim()) {
             items.push({ 
                 id: 'goal',
                 icon: Target, 
-                text: `Goal: ${formData.goal.length > 30 ? formData.goal.slice(0, 30) + '...' : formData.goal}`,
+                text: `Goal: ${formData.goal.slice(0, 30)}...`,
                 value: formData.goal
             });
         }
         
-        // Only show if user has selected a proficiency (not empty)
-        if (formData.proficiency && formData.proficiency !== '') {
-            items.push({
-                id: 'proficiency',
-                icon: Brain,
-                text: `${formData.proficiency} level`,
-                value: formData.proficiency
-            });
-        }
-        
-        // Only show if user has selected daily time (not empty)
-        if (formData.dailyTime && formData.dailyTime !== '') {
+        if (formData.dailyTime) {
             items.push({ 
                 id: 'dailyTime',
                 icon: Clock, 
@@ -38,19 +26,7 @@ const AISummarizer = ({ formData, currentStep, aiSummary }) => {
             });
         }
         
-        // Only show if user has selected timeframe (not empty)
-        if (formData.timeframe && formData.timeframe !== '') {
-            const timeframeLabel = formData.timeframeLabel || formData.timeframe;
-            items.push({
-                id: 'timeframe',
-                icon: Clock,
-                text: `Timeline: ${timeframeLabel}`,
-                value: formData.timeframe
-            });
-        }
-        
-        // Only show if user has selected learning style (not empty)
-        if (formData.learningStyle && formData.learningStyle !== '') {
+        if (formData.learningStyle) {
             items.push({ 
                 id: 'learningStyle',
                 icon: Users, 
@@ -59,48 +35,32 @@ const AISummarizer = ({ formData, currentStep, aiSummary }) => {
             });
         }
         
-        // Only show if user has selected availability (not empty)
-        if (formData.availability && formData.availability !== '') {
-            items.push({
-                id: 'availability',
-                icon: Clock,
-                text: `Available: ${formData.availability}`,
-                value: formData.availability
-            });
-        }
-        
         return items;
-    }, [formData.goal, formData.proficiency, formData.dailyTime, formData.timeframe, formData.timeframeLabel, formData.learningStyle, formData.availability]);
+    }, [formData.goal, formData.dailyTime, formData.learningStyle]);
 
-    // Calculate completion percentage - OVERALL progress through ALL steps
+    // Calculate completion percentage
     const completionScore = useMemo(() => {
-        // Define ALL required fields across all steps
-        const allRequiredFields = [
-            'goal',           // Step 1
-            'selectedTags',   // Step 1
-            'proficiency',    // Step 2
-            'dailyTime',      // Step 3
-            'timeframe',      // Step 3
-            'learningStyle',  // Step 4
-            'availability'    // Step 4
-        ];
-        
-        // Count how many are actually filled
-        const completedFields = allRequiredFields.filter(field => {
+        const requiredFields = ['goal', 'selectedTags', 'proficiency', 'dailyTime', 'timeframe', 'learningStyle', 'availability'];
+        const completedFields = requiredFields.filter(field => {
             const value = formData[field];
-            if (field === 'selectedTags') {
-                return Array.isArray(value) && value.length > 0;
-            }
-            return value && value.toString().trim() !== '';
+            return Array.isArray(value) ? value.length > 0 : Boolean(value?.toString().trim());
         });
-        
-        // Calculate percentage based on ALL fields, not just current step
-        return Math.round((completedFields.length / allRequiredFields.length) * 100);
-    }, [formData.goal, formData.selectedTags, formData.proficiency, formData.dailyTime, 
-        formData.timeframe, formData.learningStyle, formData.availability]);
+        return Math.round((completedFields.length / requiredFields.length) * 100);
+    }, [formData]);
 
     // Progress calculation
-    const progressPercentage = (currentStep / 5) * 100;
+    //
+    // Uses the SAME formula as the wizard's own step bar —
+    // `((currentStep - 1) / (totalSteps - 1)) * 100` — so the two can never
+    // disagree. This panel used to compute `(currentStep / 5) * 100`, which read
+    // 20% on step 1 and 100% on step 5 while the wizard above said 0% and 100%
+    // for the same steps: two bars, two different numbers, no explanation.
+    //
+    // The bar is clamped to 0-100 because `totalSteps` of 1 would divide by zero.
+    const stepProgress = totalSteps > 1
+        ? ((currentStep - 1) / (totalSteps - 1)) * 100
+        : 100;
+    const progressPercentage = Math.max(0, Math.min(100, stepProgress));
 
     return (
         <div className="h-full flex flex-col">
@@ -113,8 +73,8 @@ const AISummarizer = ({ formData, currentStep, aiSummary }) => {
             {/* Progress Bar */}
             <div className="mb-6">
                 <div className="flex justify-between text-sm mb-2">
-                    <span className="text-text/60">Progress</span>
-                    <span className="text-text">{currentStep}/5</span>
+                    <span className="text-text/60">Step</span>
+                    <span className="text-text">{currentStep} of {totalSteps}</span>
                 </div>
                 <div className="w-full bg-text/10 rounded-full h-2">
                     <motion.div 
@@ -125,7 +85,7 @@ const AISummarizer = ({ formData, currentStep, aiSummary }) => {
                     />
                 </div>
                 <span className="text-xs text-text/50 mt-1 block">
-                    {completionScore}% complete
+                    {completionScore}% of the form filled in
                 </span>
             </div>
 
@@ -188,7 +148,7 @@ const AISummarizer = ({ formData, currentStep, aiSummary }) => {
                     </motion.div>
                 )}
 
-                {/* AI Analysis Ready Indicator */}
+                {/* AI Summary Display */}
                 {aiSummary && (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -197,22 +157,21 @@ const AISummarizer = ({ formData, currentStep, aiSummary }) => {
                     >
                         <div className="flex items-center gap-2 mb-2">
                             <Sparkles className="w-4 h-4 text-primary" />
-                            <span className="font-medium text-primary">AI Analysis Complete</span>
+                            <span className="font-medium text-primary">AI Analysis Ready</span>
                             <CheckCircle className="w-4 h-4 text-green-500" />
                         </div>
-                        <p className="text-text/70 text-sm">
-                            Your learning plan has been analyzed. Review the detailed feedback in the main section.
-                        </p>
-                        {/* Room Details */}
-                        <div className="flex items-center gap-4 text-xs text-text/60 mt-3 pt-3 border-t border-text/10">
+                        <p className="text-text/80 text-sm mb-2">{aiSummary.estimatedGain}</p>
+                        {aiSummary.budget && (
+                            <div className="mb-2 text-xs font-medium text-primary">
+                                ≈ {aiSummary.budget.studyDayDates?.length || 0} study days, ~{Math.round((aiSummary.budget.totalMinutes || 0) / 60)} h, {aiSummary.budget.moduleCount || 0} modules
+                            </div>
+                        )}
+                        <div className="flex items-center gap-4 text-xs text-text/60">
                             <span>Room: {aiSummary.suggestedRoomSize}</span>
-                            <span>•</span>
                             <span>{aiSummary.studyIntensity}</span>
                         </div>
                     </motion.div>
                 )}
-
-
             </div>
         </div>
     );

@@ -5,20 +5,22 @@ import { User, Settings, LogOut } from "lucide-react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import Toggletheme from "../elements/toggletheme";
-import { useUser } from "../../contexts/UserContext";
-import { authService } from "../../services/authService";
-import { getUserAvatarUrl } from "../../utils/imageUtils";
 
+
+import { clearAuth } from "../../api/client";
+import { disconnectSocket } from "../../sockets/socketClient";
+import { getCurrentUser } from "../../utils/user";
+import { getUserProfileAndSync } from "../../api/users";
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(
+    () => localStorage.getItem("isLoggedIn") === "true"
+  );
+  const [currentUser, setCurrentUser] = useState(() => getCurrentUser());
   const navigate = useNavigate();
-  const { isAuthenticated, user, clearUser } = useUser();
-  
-  // Use UserContext for authentication state
-  const isLoggedIn = isAuthenticated;
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 1);
@@ -26,26 +28,38 @@ export default function Navbar() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  const handleLogout = async () => {
-    try {
-      // Use authService.logout() to properly clear tokens and user-specific data
-      await authService.logout();
-      clearUser(); // Clear UserContext state
-      // Navigate to landing page
-      navigate('/');
-      // Reload to clear any remaining state
-      window.location.reload();
-    } catch (error) {
-      console.error('Logout error:', error);
-      // Even if API call fails, clear local data and redirect
-      clearUser();
-      navigate('/');
-      window.location.reload();
+  // Keep the login state and user profile live
+  useEffect(() => {
+    const syncAuth = () => {
+      setIsLoggedIn(localStorage.getItem("isLoggedIn") === "true");
+      setCurrentUser(getCurrentUser());
+    };
+    window.addEventListener("storage", syncAuth);
+    return () => window.removeEventListener("storage", syncAuth);
+  }, []);
+
+  // Fetch fresh profile on mount if signed in so latest avatar is reflected
+  useEffect(() => {
+    if (isLoggedIn && localStorage.getItem("token")) {
+      getUserProfileAndSync()
+        .then(() => setCurrentUser(getCurrentUser()))
+        .catch(() => {});
     }
+  }, [isLoggedIn]);
+
+  const handleLogout = () => {
+    clearAuth();
+    disconnectSocket();
+    setIsLoggedIn(false);
+    setProfileMenuOpen(false);
+    setIsOpen(false);
+    // Client-side only - a reload here would discard the navigation and remount the app.
+    navigate("/", { replace: true });
   };
 
+
   const linkClasses = ({ isActive }) =>
-    `relative inline-block transition-colors duration-300
+    `relative inline-block pb-1 transition-colors duration-300
      after:content-[''] after:absolute after:left-0 after:bottom-0 after:h-[2px]
      after:bg-primary after:transition-all after:duration-300 after:ease-in-out
      after:w-0 hover:after:w-full
@@ -92,10 +106,9 @@ export default function Navbar() {
             <motion.span
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              className="inline-block "
-              style={{ fontFamily: "'Megrim', cursive" }}
+              className="inline-block"
             >
-              Learncurve
+              FocusKami
             </motion.span>
           </NavLink>
 
@@ -119,18 +132,21 @@ export default function Navbar() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => setProfileMenuOpen(!profileMenuOpen)}
-                className="flex items-center justify-center w-10 h-10 rounded-full border border-text/50 hover:border-text hover:bg-text/10 text-text transition-all duration-200 overflow-hidden bg-background"
+                className="flex items-center justify-center w-10 h-10 rounded-full border border-text/50 hover:border-text hover:bg-text/10 text-text transition-all duration-200 overflow-hidden"
+                title={currentUser?.name || "Profile"}
               >
-                {user && getUserAvatarUrl(user) ? (
-                  <img 
-                    src={getUserAvatarUrl(user)} 
-                    alt={user.username || 'User'}
-                    className="w-full h-full object-cover"
-                    onError={(e) => {
-                      console.error('Avatar load error');
-                      e.target.style.display = 'none';
+                {currentUser?.avatarUrl ? (
+                  <img
+                    src={currentUser.avatarUrl}
+                    alt={currentUser.name || "User"}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full rounded-full object-cover"
+                    onError={() => {
+                      setCurrentUser(prev => ({ ...prev, avatarUrl: "" }));
                     }}
                   />
+                ) : currentUser?.initials && currentUser.initials !== "?" ? (
+                  <span className="text-xs font-bold tracking-tight">{currentUser.initials}</span>
                 ) : (
                   <User size={20} />
                 )}
@@ -156,13 +172,14 @@ export default function Navbar() {
                         animate={{ x: 0, opacity: 1 }}
                         transition={{ delay: i * 0.05, duration: 0.2 }}
                         whileHover={{ 
-                          x: 5
+                          x: 5,
+                          backgroundColor: "rgba(var(--color-text-rgb), 0.1)"
                         }}
                         onClick={() => {
                           setProfileMenuOpen(false);
                           item.action();
                         }}
-                        className={`flex items-center gap-3 w-full px-4 py-3 text-sm text-text/80 hover:text-text hover:bg-white/5 transition-colors ${
+                        className={`flex items-center gap-3 w-full px-4 py-3 text-sm text-text/80 hover:text-text transition-colors ${
                           item.border ? 'border-t border-text/10' : ''
                         }`}
                       >
@@ -236,11 +253,8 @@ export default function Navbar() {
                   border-l border-primary/20 shadow-xl flex flex-col"
               >
                 <div className="flex items-center justify-between px-5 py-4 border-b border-text/20">
-                  <span 
-                    className="text-2xl font-bold tracking-wide text-primary"
-                    style={{ fontFamily: "'Megrim', cursive" }}
-                  >
-                    Learncurve
+                  <span className="text-2xl font-bold tracking-wide text-primary">
+                    FocusKami
                   </span>
                   <motion.button
                     whileHover={{ scale: 1.1 }}
@@ -255,14 +269,33 @@ export default function Navbar() {
                 <nav className="flex flex-col gap-1 px-3 py-5 flex-grow">
                   {/* Mobile menu items based on login status */}
                   {isLoggedIn ? (
-                    // Show profile options when logged in
-                    [
-                      { to: "/about", text: "About" },
-                      { to: "/contact", text: "Contact Us" },
-                      { to: "/profile", text: "Profile" },
-                      { to: "/settings", text: "Settings" },
-                      { action: handleLogout, text: "Logout" }
-                    ].map((link, i) => (
+                    <>
+                      <div className="flex items-center gap-3 px-3 py-2 mb-3 rounded-xl bg-text/5 border border-text/10">
+                        {currentUser?.avatarUrl ? (
+                          <img
+                            src={currentUser.avatarUrl}
+                            alt={currentUser.name || "User"}
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 rounded-full object-cover"
+                            onError={() => setCurrentUser(prev => ({ ...prev, avatarUrl: "" }))}
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold text-sm">
+                            {currentUser?.initials && currentUser.initials !== "?" ? currentUser.initials : <User size={18} />}
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-sm text-text truncate">{currentUser?.name || "Learner"}</p>
+                          <p className="text-xs text-text/60">Signed in</p>
+                        </div>
+                      </div>
+                      {[
+                        { to: "/about", text: "About" },
+                        { to: "/contact", text: "Contact Us" },
+                        { to: "/profile", text: "Profile" },
+                        { to: "/settings", text: "Settings" },
+                        { action: handleLogout, text: "Logout" }
+                      ].map((link, i) => (
                       <motion.div
                         key={link.to || link.text}
                         initial={{ x: 50, opacity: 0 }}
@@ -283,14 +316,17 @@ export default function Navbar() {
                         ) : (
                           <NavLink
                             to={link.to}
-                            className={`${linkClasses} block py-3 px-4 rounded-lg hover:bg-background/50`}
+                            className={({ isActive }) =>
+                              `${linkClasses({ isActive })} block py-3 px-4 rounded-lg hover:bg-background/50`
+                            }
                             onClick={() => setIsOpen(false)}
                           >
                             {link.text}
                           </NavLink>
                         )}
                       </motion.div>
-                    ))
+                      ))}
+                    </>
                   ) : (
                     [
                       { to: "/about", text: "About" },
@@ -307,7 +343,9 @@ export default function Navbar() {
                       >
                         <NavLink
                           to={link.to}
-                          className={`${linkClasses} block py-3 px-4 rounded-lg hover:bg-background/50`}
+                          className={({ isActive }) =>
+                            `${linkClasses({ isActive })} block py-3 px-4 rounded-lg hover:bg-background/50`
+                          }
                           onClick={() => setIsOpen(false)}
                         >
                           {link.text}
@@ -318,7 +356,7 @@ export default function Navbar() {
                 </nav>
 
                 <div className="p-4 text-xs text-text/50 border-t border-text/20">
-                  © {new Date().getFullYear()} Learncurve
+                  © {new Date().getFullYear()} FocusKami
                 </div>
               </motion.div>
             </div>

@@ -1,5 +1,5 @@
 // Components/ui/index.jsx
-import React from "react";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
 
 // Card Component
@@ -88,7 +88,10 @@ export const ProgressBar = ({ value, max = 100, variant = "primary", className =
 };
 
 // Avatar Component
-export const Avatar = ({ name, size = "md", status = null }) => {
+export const Avatar = ({ name, src, avatarUrl, size = "md", status = null, className = "" }) => {
+    const [imgFailed, setImgFailed] = useState(false);
+    const photoUrl = src || avatarUrl;
+
     const sizes = {
         sm: "w-8 h-8 text-xs",
         md: "w-12 h-12 text-sm",
@@ -101,13 +104,32 @@ export const Avatar = ({ name, size = "md", status = null }) => {
         "on-track": "ring-primary"
     };
 
-    const initials = name.split(" ").map(n => n[0]).join("").toUpperCase();
+    // `name` is optional in practice — name.split(...) threw a TypeError for
+    // undefined/null and for double-spaced names.
+    const initials = String(name || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(part => part.charAt(0))
+        .join("")
+        .toUpperCase()
+        .slice(0, 2) || "?";
 
     return (
-        <div className="relative flex-shrink-0">
-            <div className={`${sizes[size]} rounded-full bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center font-bold text-alt ${status ? `ring-2 ${statusColors[status]}` : ''}`}>
-                {initials}
-            </div>
+        <div className={`relative flex-shrink-0 ${className}`}>
+            {photoUrl && !imgFailed ? (
+                <img
+                    src={photoUrl}
+                    alt={name || "User"}
+                    referrerPolicy="no-referrer"
+                    onError={() => setImgFailed(true)}
+                    className={`${sizes[size]} rounded-full object-cover ${status ? `ring-2 ${statusColors[status]}` : ''}`}
+                />
+            ) : (
+                <div className={`${sizes[size]} rounded-full bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center font-bold text-alt ${status ? `ring-2 ${statusColors[status]}` : ''}`}>
+                    {initials}
+                </div>
+            )}
         </div>
     );
 };

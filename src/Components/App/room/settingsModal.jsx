@@ -1,5 +1,5 @@
 // Components/room/SettingsModal.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
     Bell,
@@ -17,53 +17,208 @@ import {
     EyeOff,
 } from "lucide-react";
 import { Card, Button, Badge } from "../../elements/elements";
+import { updateUserSettings } from "../../../api/users";
+import { updateRoom } from "../../../api/rooms";
+
+const tabVariants = {
+    inactive: {
+        opacity: 0.8,
+        y: 2,
+    },
+    active: {
+        opacity: 1,
+        y: 0,
+        transition: {
+            duration: 0.2,
+            ease: "easeOut",
+        },
+    },
+};
+
+const contentVariants = {
+    hidden: {
+        opacity: 0,
+        x: 10,
+    },
+    visible: {
+        opacity: 1,
+        x: 0,
+        transition: {
+            duration: 0.3,
+            ease: "easeOut",
+            staggerChildren: 0.05,
+        },
+    },
+};
+
+const itemVariants = {
+    hidden: { opacity: 0, y: 10 },
+    visible: { opacity: 1, y: 0 },
+};
+
+const ToggleSwitch = ({
+    checked,
+    onChange,
+    label,
+    description,
+    icon: Icon,
+}) => (
+    <motion.div
+        variants={itemVariants}
+        className="flex items-center justify-between py-4 border-b border-text/10 last:border-b-0"
+    >
+        <div className="flex items-start space-x-3">
+            {Icon && <Icon className="w-5 h-5 text-text/60 mt-0.5" />}
+            <div>
+                <div className="text-sm font-medium text-text">{label}</div>
+                {description && (
+                    <div className="text-xs text-text/60 mt-1 max-w-sm">
+                        {description}
+                    </div>
+                )}
+            </div>
+        </div>
+        <motion.button
+            whileTap={{ scale: 0.95 }}
+            onClick={() => onChange(!checked)}
+            className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${
+                checked ? "bg-primary" : "bg-text/20"
+            }`}
+        >
+            <motion.div
+                animate={{
+                    x: checked ? 20 : 2,
+                }}
+                transition={{ duration: 0.2, ease: "easeInOut" }}
+                className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm"
+            />
+        </motion.button>
+    </motion.div>
+);
+
+const SelectField = ({
+    value,
+    onChange,
+    options,
+    label,
+    description,
+    icon: Icon,
+}) => (
+    <motion.div
+        variants={itemVariants}
+        className="py-4 border-b border-text/10 last:border-b-0"
+    >
+        <div className="flex items-start justify-between">
+            <div className="flex items-start space-x-3 flex-1">
+                {Icon && <Icon className="w-5 h-5 text-text/60 mt-0.5" />}
+                <div className="flex-1">
+                    <div className="text-sm font-medium text-text">{label}</div>
+                    {description && (
+                        <div className="text-xs text-text/60 mt-1">{description}</div>
+                    )}
+                </div>
+            </div>
+            <select
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="px-3 py-2 text-sm bg-background border border-text/20 rounded-lg text-text focus:outline-none focus:ring-2 focus:ring-primary/30 min-w-[120px]"
+            >
+                {options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                        {option.label}
+                    </option>
+                ))}
+            </select>
+        </div>
+    </motion.div>
+);
 
 const SettingsModal = ({
     showSettings,
     onClose,
     onLeaveRoom,
     roomData,
-    isRoomAdmin = false,
 }) => {
     const [activeTab, setActiveTab] = useState("notifications");
     const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
     const [roomCodeCopied, setRoomCodeCopied] = useState(false);
 
-    // Updated notification settings (removed soundEnabled)
+    // Updated notification settings — persisted via PUT /users/settings
     const [notificationSettings, setNotificationSettings] = useState({
-        messageNotifications: true,
-        quizNotifications: true,
-        scheduleNotifications: false,
-        pushNotifications: true,
+        newsletter: true,
+        productUpdates: true,
+        securityAlerts: false,
+        chatMentions: true,
+        newMessages: false,
     });
+    const [notifSaving, setNotifSaving] = useState(false);
+    const [notifMsg, setNotifMsg] = useState("");
+    const timers = useRef([]);
+    // Clearing on unmount stops the "Saved" flashes from writing state afterwards.
+    useEffect(() => () => {
+        timers.current.forEach(clearTimeout);
+        timers.current = [];
+    }, []);
+    const flashMessage = (setter) => {
+        const id = setTimeout(() => setter(""), 2000);
+        timers.current.push(id);
+    };
 
-    // Updated room preferences (removed darkMode, autoScroll, showTypingIndicators)
+    // Room preferences — persisted via PUT /rooms/:id (pace/schedule/isPublic)
     const [roomPreferences, setRoomPreferences] = useState({
         quizFrequency: "daily",
         quizDifficulty: "medium",
         showOthersTasks: true,
         focusMode: false,
     });
+    const [prefsSaving, setPrefsSaving] = useState(false);
+    const [prefsMsg, setPrefsMsg] = useState("");
 
-    const handleNotificationChange = (setting, value) => {
-        setNotificationSettings((prev) => ({
-            ...prev,
-            [setting]: value,
-        }));
+    const handleNotificationChange = async (setting, value) => {
+        const next = { ...notificationSettings, [setting]: value };
+        setNotificationSettings(next);
+        setNotifSaving(true);
+        setNotifMsg("");
+        try {
+            await updateUserSettings(next);
+            setNotifMsg("Saved");
+            flashMessage(setNotifMsg);
+        } catch (err) {
+            setNotifMsg(err?.message || "Save failed");
+        } finally {
+            setNotifSaving(false);
+        }
     };
 
-    const handlePreferenceChange = (setting, value) => {
-        setRoomPreferences((prev) => ({
-            ...prev,
-            [setting]: value,
-        }));
+    const handlePreferenceChange = async (setting, value) => {
+        const next = { ...roomPreferences, [setting]: value };
+        setRoomPreferences(next);
+        // Map UI prefs to backend room fields where possible
+        const roomUpdates = {};
+        if (setting === "quizFrequency" && value) {
+            roomUpdates.schedule = value === "daily" ? "Daily at 8 PM" : value === "weekly" ? "Weekly on Mon at 8 PM" : roomData?.schedule;
+        }
+        if (Object.keys(roomUpdates).length > 0 && roomData?.id) {
+            setPrefsSaving(true);
+            setPrefsMsg("");
+            try {
+                await updateRoom(roomData.id, roomUpdates);
+                setPrefsMsg("Saved");
+                flashMessage(setPrefsMsg);
+            } catch (err) {
+                setPrefsMsg(err?.message || "Save failed");
+            } finally {
+                setPrefsSaving(false);
+            }
+        }
     };
 
     const copyRoomCode = async () => {
+        if (!roomData?.id) return;
         try {
-            await navigator.clipboard.writeText(roomData?.code || roomData?.id || "");
+            await navigator.clipboard.writeText(roomData.id);
             setRoomCodeCopied(true);
-            setTimeout(() => setRoomCodeCopied(false), 2000);
+            timers.current.push(setTimeout(() => setRoomCodeCopied(false), 2000));
         } catch (err) {
             console.error("Failed to copy room code:", err);
         }
@@ -74,124 +229,17 @@ const SettingsModal = ({
         onLeaveRoom();
     };
 
-    const tabVariants = {
-        inactive: {
-            opacity: 0.8,
-            y: 2,
-        },
-        active: {
-            opacity: 1,
-            y: 0,
-            transition: {
-                duration: 0.2,
-                ease: "easeOut",
-            },
-        },
-    };
-
-    const contentVariants = {
-        hidden: {
-            opacity: 0,
-            x: 10,
-        },
-        visible: {
-            opacity: 1,
-            x: 0,
-            transition: {
-                duration: 0.3,
-                ease: "easeOut",
-                staggerChildren: 0.05,
-            },
-        },
-    };
-
-    const itemVariants = {
-        hidden: { opacity: 0, y: 10 },
-        visible: { opacity: 1, y: 0 },
-    };
-
-    const ToggleSwitch = ({
-        checked,
-        onChange,
-        label,
-        description,
-        icon: Icon,
-    }) => (
-        <motion.div
-            variants={itemVariants}
-            className="flex items-center justify-between py-4 border-b border-text/10 last:border-b-0"
-        >
-            <div className="flex items-start space-x-3">
-                {Icon && <Icon className="w-5 h-5 text-text/60 mt-0.5" />}
-                <div>
-                    <div className="text-sm font-medium text-text">{label}</div>
-                    {description && (
-                        <div className="text-xs text-text/60 mt-1 max-w-sm">
-                            {description}
-                        </div>
-                    )}
-                </div>
-            </div>
-            <motion.button
-                whileTap={{ scale: 0.95 }}
-                onClick={() => onChange(!checked)}
-                className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${
-                    checked ? "bg-primary" : "bg-text/20"
-                }`}
-            >
-                <motion.div
-                    animate={{
-                        x: checked ? 20 : 2,
-                    }}
-                    transition={{ duration: 0.2, ease: "easeInOut" }}
-                    className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm"
-                />
-            </motion.button>
-        </motion.div>
-    );
-
-    const SelectField = ({
-        value,
-        onChange,
-        options,
-        label,
-        description,
-        icon: Icon,
-    }) => (
-        <motion.div
-            variants={itemVariants}
-            className="py-4 border-b border-text/10 last:border-b-0"
-        >
-            <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-3 flex-1">
-                    {Icon && <Icon className="w-5 h-5 text-text/60 mt-0.5" />}
-                    <div className="flex-1">
-                        <div className="text-sm font-medium text-text">{label}</div>
-                        {description && (
-                            <div className="text-xs text-text/60 mt-1">{description}</div>
-                        )}
-                    </div>
-                </div>
-                <select
-                    value={value}
-                    onChange={(e) => onChange(e.target.value)}
-                    className="px-3 py-2 text-sm bg-background border border-text/20 rounded-lg text-text focus:outline-none focus:ring-2 focus:ring-primary/30 min-w-[120px]"
-                >
-                    {options.map((option) => (
-                        <option key={option.value} value={option.value}>
-                            {option.label}
-                        </option>
-                    ))}
-                </select>
-            </div>
-        </motion.div>
-    );
-
     const tabs = [
         { id: "notifications", label: "Notifications", icon: Bell },
         { id: "preferences", label: "Preferences", icon: Settings },
         { id: "room", label: "Room Info", icon: Users },
     ];
+
+    // Real room fields only. `totalMembers` / `category` are never populated by
+    // room.jsx or by GET /rooms/:id — the detail payload exposes `activeUsers`
+    // and `skill`, so anything else would have to be fabricated.
+    const memberCount = roomData?.activeUsers ?? roomData?.totalMembers ?? null;
+    const completionRate = typeof roomData?.completionRate === "number" ? roomData.completionRate : null;
 
     return (
         <AnimatePresence>
@@ -269,12 +317,17 @@ const SettingsModal = ({
                                             exit="hidden"
                                             className="space-y-0"
                                         >
+                                            {(notifMsg || notifSaving) && (
+                                                <p className={`text-xs pb-3 ${notifMsg.startsWith("Save failed") || notifMsg.startsWith("Could") ? "text-red-500" : "text-primary"}`}>
+                                                    {notifSaving ? "Saving..." : notifMsg}
+                                                </p>
+                                            )}
                                             <ToggleSwitch
                                                 icon={Bell}
-                                                checked={notificationSettings.messageNotifications}
+                                                checked={notificationSettings.newMessages}
                                                 onChange={(value) =>
                                                     handleNotificationChange(
-                                                        "messageNotifications",
+                                                        "newMessages",
                                                         value
                                                     )
                                                 }
@@ -283,19 +336,19 @@ const SettingsModal = ({
                                             />
                                             <ToggleSwitch
                                                 icon={Zap}
-                                                checked={notificationSettings.quizNotifications}
+                                                checked={notificationSettings.chatMentions}
                                                 onChange={(value) =>
-                                                    handleNotificationChange("quizNotifications", value)
+                                                    handleNotificationChange("chatMentions", value)
                                                 }
                                                 label="Quiz Notifications"
                                                 description="Get notified about new quizzes and deadlines"
                                             />
                                             <ToggleSwitch
                                                 icon={Clock}
-                                                checked={notificationSettings.scheduleNotifications}
+                                                checked={notificationSettings.productUpdates}
                                                 onChange={(value) =>
                                                     handleNotificationChange(
-                                                        "scheduleNotifications",
+                                                        "productUpdates",
                                                         value
                                                     )
                                                 }
@@ -304,9 +357,9 @@ const SettingsModal = ({
                                             />
                                             <ToggleSwitch
                                                 icon={Shield}
-                                                checked={notificationSettings.pushNotifications}
+                                                checked={notificationSettings.newsletter}
                                                 onChange={(value) =>
-                                                    handleNotificationChange("pushNotifications", value)
+                                                    handleNotificationChange("newsletter", value)
                                                 }
                                                 label="Browser Notifications"
                                                 description="Show notifications even when tab is not active"
@@ -323,6 +376,11 @@ const SettingsModal = ({
                                             exit="hidden"
                                             className="space-y-0"
                                         >
+                                            {prefsMsg && (
+                                                <p className={`text-xs pb-3 ${prefsMsg === "Saved" ? "text-primary" : "text-red-500"}`}>
+                                                    {prefsSaving ? "Saving..." : prefsMsg}
+                                                </p>
+                                            )}
                                             <SelectField
                                                 icon={Clock}
                                                 value={roomPreferences.quizFrequency}
@@ -375,11 +433,10 @@ const SettingsModal = ({
                                             {/* Room Name and Description - moved above room code */}
                                             <div className="p-4 bg-alt/10 rounded-xl">
                                                 <h4 className="font-medium text-text mb-2">
-                                                    {roomData?.name || "Frontend in 30 Days"}
+                                                    {roomData?.name || "Room"}
                                                 </h4>
                                                 <p className="text-sm text-text/70">
-                                                    {roomData?.description ||
-                                                        "Master modern frontend development with React, JavaScript, and CSS"}
+                                                    {roomData?.description || "No description provided."}
                                                 </p>
                                             </div>
 
@@ -391,7 +448,7 @@ const SettingsModal = ({
                                                     </span>
                                                     <div className="flex items-center space-x-2">
                                                         <code className="bg-background px-3 py-1.5 rounded-lg border font-mono text-sm text-text">
-                                                            {roomData?.code || "N/A"}
+                                                            {roomData?.id || "—"}
                                                         </code>
                                                         <motion.button
                                                             whileTap={{ scale: 0.95 }}
@@ -415,33 +472,16 @@ const SettingsModal = ({
                                                         variant="primary"
                                                         className="bg-primary/10 text-text border-primary/20"
                                                     >
-                                                        {roomData?.memberCount || 0} / {roomData?.maxSeats || 0}
+                                                        {memberCount ?? "—"} members
                                                     </Badge>
                                                 </div>
 
                                                 <div className="flex items-center justify-between">
                                                     <span className="text-sm font-medium text-text/70">
-                                                        Status
-                                                    </span>
-                                                    <span className={`text-sm font-medium ${
-                                                        roomData?.status === 'ACTIVE' ? 'text-green-500' :
-                                                        roomData?.status === 'WAITING' ? 'text-orange-500' :
-                                                        roomData?.status === 'PAUSED' ? 'text-yellow-500' :
-                                                        'text-blue-500'
-                                                    }`}>
-                                                        {roomData?.status || "N/A"}
-                                                    </span>
-                                                </div>
-                                                
-                                                <div className="flex items-center justify-between">
-                                                    <span className="text-sm font-medium text-text/70">
-                                                        Created
+                                                        Category
                                                     </span>
                                                     <span className="text-sm text-text">
-                                                        {roomData?.createdAt 
-                                                            ? new Date(roomData.createdAt).toLocaleDateString()
-                                                            : "N/A"
-                                                        }
+                                                        {roomData?.skill || roomData?.category || "—"}
                                                     </span>
                                                 </div>
                                             </div>
@@ -450,13 +490,13 @@ const SettingsModal = ({
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
                                                     <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-                                                        {roomData?.daysRemaining !== undefined ? roomData.daysRemaining : "N/A"}
+                                                        {roomData?.daysRemaining ?? "—"}
                                                     </p>
                                                     <p className="text-sm text-text/60">Days Left</p>
                                                 </div>
                                                 <div className="text-center p-4 bg-green-50 dark:bg-green-900/20 rounded-xl">
                                                     <p className="text-2xl font-bold text-green-600 dark:text-green-400">
-                                                        {roomData?.completionRate !== undefined ? `${roomData.completionRate}%` : "N/A"}
+                                                        {typeof completionRate === "number" ? `${completionRate}%` : "—"}
                                                     </p>
                                                     <p className="text-sm text-text/60">Complete</p>
                                                 </div>

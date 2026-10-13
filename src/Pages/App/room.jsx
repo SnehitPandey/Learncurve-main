@@ -1,27 +1,27 @@
 // Components/room/room.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
 
-import ErrorBoundary from "../../Components/ErrorBoundary";
 import RoomHeader from "../../Components/App/room/roomHeader";
 import RoomContent from "../../Components/App/room/roomContent";
 import ChatModal from "../../Components/App/room/chatModal";
 import SettingsModal from "../../Components/App/room/settingsModal";
 import RoomOverlay from "../../Components/App/room/roomOverlay";
-import { roomService } from "../../services/roomService";
-import { chatService } from "../../services/chatService";
-import { socketService } from "../../services/socketService";
-import { usePresence } from "../../hooks/usePresence";
-import { useDiscordPresence } from "../../hooks/useDiscordPresence";
-import { distributeMilestonesAcrossTimeline } from "../../utils/roadmapTimelineUtils";
-import { generateTodaysTasks } from "../../utils/taskGenerator";
+import { getRoomDetail, getRoomTasks, toggleTask, leaveRoom as leaveRoomApi, replanRoadmap } from "../../api/rooms";
+import { getRoadmap, toggleRoadmapTask } from "../../api/kanban";
+import { getRoomMessages } from "../../api/chat";
+import { useRoomSocket } from "../../sockets/useRoomSocket";
 
 const Room = () => {
-    const { roomId } = useParams();
+    // The router only declares `room/:roomname`, so that is the one param that
+    // can exist here. Renaming at the destructure keeps the rest of the page
+    // (which talks about rooms as ids) unchanged.
+    const { roomname: roomId } = useParams();
     const navigate = useNavigate();
-    
-    // State management
+
+
+    // UI state
     const [activeView, setActiveView] = useState("progress");
     const [showSettings, setShowSettings] = useState(false);
     const [showChat, setShowChat] = useState(false);
@@ -29,734 +29,379 @@ const Room = () => {
     const [showOverlay, setShowOverlay] = useState(false);
     const [overlayContent, setOverlayContent] = useState(null);
     const [unreadCount, setUnreadCount] = useState(0);
-    
-    // Room data state
-    const [roomData, setRoomData] = useState(null);
-    const [members, setMembers] = useState([]);
-    // Track online presence list separately from full members list
-    const [onlineMembers, setOnlineMembers] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState("");
-    
-    // Mobile detection
-    const [isMobile, setIsMobile] = useState(window.innerWidth <= 720);
-    
-    // Get current user info
-    const [currentUser, setCurrentUser] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [scheduleState, setScheduleState] = useState({ notStarted: false, startsOn: "", restDay: false, availability: "", finished: false });
+    const [activeTaskId, setActiveTaskId] = useState(null);
+    const lastSeenMsgRef = useRef(null);
+    const mountedRef = useRef(true);
+
+    // Re-arm on EVERY mount, not just the first.
+//
+// This used to be `useEffect(() => () => { mountedRef.current = false; }, [])`,
+// which only ever clears the flag. Under React 19 StrictMode (main.jsx) effects
+// are mounted, cleaned up, then mounted again — so the cleanup ran and nothing
+// set it back to `true`. The ref stayed `false` for the rest of the session,
+// which made every `if (!mountedRef.current) return;` guard bail and, critically,
+// skipped `setLoading(false)` in the fetch's `finally` block. Both "Loading
+// tasks..." and "Loading roadmap..." read from that one flag, so the room page
+// spun forever on a room it had already fetched successfully.
+//
+// `friendsSection.jsx`, `createdRoom.jsx` and `settings.jsx` already re-arm
+// correctly; this was the odd one out.
     useEffect(() => {
-        const user = JSON.parse(localStorage.getItem('user') || '{}');
-        setCurrentUser(user);
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
     }, []);
 
-    const currentUserId = currentUser?.id || currentUser?._id;
 
-    const normalizeMembers = React.useCallback((membersList = []) => {
-        return (membersList || []).map((member) => {
-            const userObj = member?.userId && typeof member.userId === 'object' ? member.userId : null;
-            const memberId = member?.id || member?._id || userObj?._id || member?.userId;
-            return {
-                ...member,
-                id: memberId,
-                name: member?.name || userObj?.name || userObj?.username || 'Unknown User',
-                avatarUrl: member?.avatarUrl || userObj?.avatar || userObj?.avatarUrl || userObj?.profilePic || null,
-                isOnline: Boolean(member?.isOnline ?? userObj?.isOnline),
-                isCurrentUser: String(memberId) === String(currentUserId),
-            };
-        });
-    }, [currentUserId]);
-    
-    // Create a refetch function that can be called to refresh room data
-    const refetchRoomData = async () => {
+    useEffect(() => {
+        if (!roomId) return undefined;
+
+        // ChatModal polls the SAME endpoint on its own 15s interval while it is
+        // open, so polling here too would double every request. `showChat` is
+        // only ever true on desktop (mobile chat goes through RoomOverlay, which
+        // fetches once on open), so gating on it is exactly the overlap window.
+        // While chat is closed this poll still runs, which is the only time the
+        // unread badge needs it.
+        if (showChat) return undefined;
+
+        // Poll for new messages to drive the unread badge (works without websockets).
+        // Seed lastSeen on first poll so we don't badge pre-existing history. The
+        // seed is per-effect-run, so every `showChat` transition back to false
+        // re-seeds it — that is what marks the chat the user just read as seen.
+        let mounted = true;
+        let seeded = false;
+        const poll = async () => {
+            try {
+                const res = await getRoomMessages(roomId, 1, 20);
+                const raw = res?.messages || res?.data;
+                const list = Array.isArray(raw) ? raw : [];
+                if (!mounted || list.length === 0) return;
+                const latestId = list[list.length - 1]?.id || list[list.length - 1]?._id;
+                if (!seeded) {
+                    // Seed only — never badge the history that predates this mount.
+                    lastSeenMsgRef.current = latestId;
+                    seeded = true;
+                    return;
+                }
+                if (latestId && latestId !== lastSeenMsgRef.current) {
+                    // Count messages since last seen (cap at 99+ display)
+                    const idx = list.findIndex(m => (m.id || m._id) === lastSeenMsgRef.current);
+                    const fresh = idx === -1 ? list.length : list.length - 1 - idx;
+                    if (fresh > 0) setUnreadCount(c => Math.min(99, c + fresh));
+                    lastSeenMsgRef.current = latestId;
+                }
+            } catch {
+                // Poll failed — the next tick retries.
+            }
+        };
+        const timer = setInterval(poll, 15000);
+        poll();
+        return () => { mounted = false; clearInterval(timer); };
+    }, [roomId, showChat]);
+
+    // Room data — all driven from API
+    const [roomData, setRoomData] = useState({
+        id: roomId,
+        name: "Loading...",
+        description: "",
+        daysRemaining: null,
+        totalDays: null,
+        completionRate: 0,
+        activeUsers: 0,
+        skill: "",
+        category: "",
+        difficulty: "",
+        isCreator: false,
+        isEnrolled: false,
+    });
+    const [members, setMembers] = useState([]);
+    const [todaysTasks, setTodaysTasks] = useState([]);
+    const [roadmapItems, setRoadmapItems] = useState([]);
+    const [roadmapGeneratedBy, setRoadmapGeneratedBy] = useState("template");
+    // Who is in the room right now, live. Presence used to be read only by the chat
+    // modal, so with the chat closed a peer joining changed nothing on screen.
+    const [onlineUserIds, setOnlineUserIds] = useState([]);
+    // The socket callbacks are captured once, so they cannot close over `showChat`.
+    // A ref keeps them reading the current value instead of the value at mount,
+    // which was `false` forever.
+    const showChatRef = useRef(false);
+    showChatRef.current = showChat;
+
+    // Fetch all room data from backend
+    const fetchRoomData = useCallback(async () => {
         if (!roomId) return;
-        
         try {
-            console.log('🔄 Refetching room data...');
-            const response = await roomService.getRoom(roomId);
-            
-            if (response.success && response.room) {
-                const room = response.room;
-                const membersList = normalizeMembers(room.members || []);
-                
-                // Calculate days remaining based on actual end date
-                const today = new Date();
-                let daysRemaining = 30; // Default fallback
-                
-                if (room.endDate) {
-                    const endDate = new Date(room.endDate);
-                    const timeDiff = endDate.getTime() - today.getTime();
-                    daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                } else if (room.startDate) {
-                    const startDate = new Date(room.startDate);
+            const [detailRes, tasksRes, roadmapRes] = await Promise.allSettled([
+                getRoomDetail(roomId),
+                getRoomTasks(roomId),
+                getRoadmap(roomId),
+            ]);
+            if (!mountedRef.current) return;
 
-                    if (room.roadmap && Array.isArray(room.roadmap.phases) && room.roadmap.phases.length > 0) {
-                        const estimatedDays = room.expectedDurationDays || room.durationDays || room.roadmap.phases.length * 7;
-                        const estimatedEnd = new Date(startDate);
-                        estimatedEnd.setDate(estimatedEnd.getDate() + estimatedDays);
-                        const timeDiff = estimatedEnd.getTime() - today.getTime();
-                        daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                    } else {
-                        const estimatedEnd = new Date(startDate);
-                        estimatedEnd.setDate(estimatedEnd.getDate() + 30);
-                        const timeDiff = estimatedEnd.getTime() - today.getTime();
-                        daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                    }
-                } else {
-                    const createdDate = new Date(room.createdAt);
-                    const daysPassed = Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
-                    daysRemaining = Math.max(0, 30 - daysPassed);
-                }
-                
-                const sevenDaysAgo = new Date();
-                sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-                    const activeUsers = membersList.filter(member => {
-                        if (member.isOnline) return true;
-                        if (member.progress && member.progress.lastActivity) {
-                            return new Date(member.progress.lastActivity) >= sevenDaysAgo;
-                        }
-                        return false;
-                    }).length;
-                
-                const completionRate = room.averageProgress || 0;
-                
-                let processedRoadmap = room.roadmap || null;
-                if (processedRoadmap && processedRoadmap.phases && processedRoadmap.phases.length > 0) {
-                    const hasExistingDates = processedRoadmap.phases.some(phase =>
-                        phase.milestones.some(m => m.startDate || m.endDate)
-                    );
-                    
-                    if (!hasExistingDates) {
-                        const totalDays = room.durationDays || 30;
-                        const startDate = room.startDate ? new Date(room.startDate) : new Date();
-                        const allMilestones = processedRoadmap.phases.flatMap(phase => phase.milestones);
-                        const distributedMilestones = distributeMilestonesAcrossTimeline(
-                            allMilestones,
-                            totalDays,
-                            startDate
-                        );
-                        
-                        let milestoneIndex = 0;
-                        processedRoadmap = {
-                            ...processedRoadmap,
-                            phases: processedRoadmap.phases.map(phase => ({
-                                ...phase,
-                                milestones: phase.milestones.map(() => {
-                                    const distributed = distributedMilestones[milestoneIndex];
-                                    milestoneIndex++;
-                                    return distributed;
-                                })
-                            }))
-                        };
-                    }
-                }
-                
+            // Room detail + members
+            if (detailRes.status === "fulfilled" && detailRes.value?.room) {
+                const r = detailRes.value.room;
                 setRoomData({
-                    id: room.id,
-                    name: room.title,
-                    description: room.description,
-                    tags: room.tags || [],
-                    code: room.code,
-                    status: room.status,
-                    hostId: room.hostId,
-                    maxSeats: room.maxSeats,
-                    memberCount: membersList.length,
-                    createdAt: room.createdAt,
-                    daysRemaining: daysRemaining,
-                    activeUsers: activeUsers,
-                    completionRate: Math.min(completionRate, 100),
-                    roadmap: processedRoadmap,
+                    id: r.id || roomId,
+                    name: r.name,
+                    description: r.description || "",
+                    // The backend computes the real schedule window and returns
+                    // null when the room's start date/timeframe is unknown.
+                    // Do NOT invent numbers here — a fabricated 18/30 reads as
+                    // real progress to the user.
+                    daysRemaining: r.daysRemaining ?? null,
+                    totalDays: r.totalDays ?? null,
+                    timeframe: r.timeframe || "",
+                    // The learner's own daily commitment. Kept as "" when unset so
+                    // the header can hide it rather than showing a fabricated one.
+                    daily_time: r.daily_time || "",
+                    completionRate: r.completionRate ?? 0,
+                    activeUsers: r.activeUsers ?? (r.members?.length || 0),
+                    skill: r.skill || "",
+                    category: r.category || "",
+                    difficulty: r.difficulty || "",
+                    isCreator: r.isCreator || false,
+                    isEnrolled: r.isEnrolled || false,
                 });
-                
-                setMembers(membersList);
-                console.log('✅ Room data refetched successfully');
+                if (Array.isArray(r.members)) {
+                    setMembers(r.members.map(m => ({
+                        id: m.id,
+                        name: m.name || "Peer Learner",
+                        avatarUrl: m.avatarUrl || "",
+                        progress: m.progress ?? 0,
+                        status: m.status || "on-track",
+                        isCurrentUser: m.isCurrentUser || false,
+                    })));
+                }
+            }
+
+            // Today's tasks
+            if (tasksRes.status === "fulfilled") {
+                const data = tasksRes.value;
+                setScheduleState({
+                    notStarted: Boolean(data?.notStarted),
+                    startsOn: data?.startsOn || "",
+                    restDay: Boolean(data?.restDay),
+                    availability: data?.availability || "",
+                    finished: Boolean(data?.finished)
+                });
+                setActiveTaskId(data?.activeTaskId || null);
+                if (Array.isArray(data?.tasks)) {
+                    setTodaysTasks(data.tasks.map(t => ({
+                        id: t.id,
+                        title: t.title,
+                        completed: !!t.completed,
+                        duration: t.duration || "30m",
+                    })));
+                } else {
+                    setTodaysTasks([]);
+                }
+            }
+
+            // Roadmap modules → ONE timeline item per TOPIC, with its lessons inside.
+            //
+            // This flattened every task into its own row, so the timeline read
+            // "Lesson 1 / Lesson 2 / Checkpoint / Lesson 1 / Lesson 2 …" with
+            // nothing marking which topic any of them belonged to. There was then
+            // no topic to drop a subtopic list from — the dropdown could only
+            // hang off a bare lesson, and the "Continue" button that should have
+            // opened it had no onClick at all.
+            //
+            // One item per module is what the UI is actually shaped for: the card
+            // is the topic, and the lessons live behind its disclosure.
+            if (roadmapRes.status === "fulfilled" && roadmapRes.value?.roadmap?.modules) {
+                setRoadmapGeneratedBy(roadmapRes.value.roadmap.generatedBy || "template");
+                const userId = JSON.parse(localStorage.getItem("user") || "{}").id;
+                // Normalise instead of `return`-ing out of the whole fetch: an
+                // early return here would skip every step added below it and any
+                // added later, and this function has already been bitten once.
+                // A malformed roadmap is an empty timeline, not a reason to stop.
+                const modules = Array.isArray(roadmapRes.value.roadmap.modules)
+                    ? roadmapRes.value.roadmap.modules
+                    : [];
+                const built = [];
+                modules.forEach(mod => {
+                    const rawTasks = Array.isArray(mod.tasks) ? mod.tasks : [];
+                    const seen = new Set();
+                    const tasks = [];
+                    for (const task of rawTasks) {
+                        const norm = (task.title || "").toLowerCase().trim();
+                        if (seen.has(norm)) continue;
+                        seen.add(norm);
+                        tasks.push({
+                            id: task.id,
+                            title: task.title,
+                            duration: task.durationEstimate || "30m",
+                            completed: Array.isArray(task.completedByUserIds)
+                                ? task.completedByUserIds.includes(userId)
+                                : false,
+                        });
+                    }
+                    if (tasks.length === 0) return;
+
+                    const everyDone = tasks.every(t => t.completed);
+                    built.push({
+                        id: `module-${mod.weekNumber}`,
+                        title: mod.title,
+                        week: mod.weekNumber,
+                        moduleTitle: mod.title,
+                        summary: mod.summary || "",
+                        subtopics: Array.isArray(mod.subtopics) ? mod.subtopics : [],
+                        tasks,
+                        // A topic counts as done only when ALL its lessons are —
+                        // otherwise a single checked lesson would strike through
+                        // the whole topic.
+                        completed: everyDone,
+                        current: !everyDone && built.every(b => b.completed),
+                    });
+                });
+                setRoadmapItems(built);
             }
         } catch (err) {
-            console.error('❌ Failed to refetch room data:', err);
+            console.warn("[Room] Fetch error:", err?.message);
+        } finally {
+            if (mountedRef.current) setLoading(false);
         }
-    };
-    
-    // Real-time presence hooks
-    const { updateActivity: legacyUpdateActivity, setIdle: legacySetIdle } = usePresence(currentUserId);
-    
-    // Discord-style presence system
-    const {
-        presenceMap,
-        isInitialized: presenceInitialized,
-        updateActivity: updatePresenceActivity,
-        setIdle: setPresenceIdle,
-        isUserOnline,
-        getUserPresence,
-        getStatusColor,
-        getStatusEmoji,
-    } = useDiscordPresence(currentUser);
+    }, [roomId]);
 
-    // Effect for window resize detection
+    useEffect(() => {
+        fetchRoomData();
+    }, [fetchRoomData]);
+
+    // Room membership is owned by the PAGE, not by the chat modal.
+    useRoomSocket(roomId, !loading, useMemo(() => ({
+        onPresence: (ids) => setOnlineUserIds(ids),
+        onMessage: (msg) => {
+            const myId = localStorage.getItem("userId") || JSON.parse(localStorage.getItem("user") || "{}").id;
+            if (myId && msg && (msg.userId === myId || msg.user_id === myId)) return;
+            if (!showChatRef.current) setUnreadCount(c => Math.min(99, c + 1));
+        },
+        onRoadmapUpdated: () => fetchRoomData(),
+        onTaskCompleted: () => fetchRoomData(),
+    }), [fetchRoomData]));
+
+
+    // Task toggle — optimistic update + backend sync
+    const handleToggleTask = useCallback(async (taskId, currentCompleted) => {
+        const newCompleted = !currentCompleted;
+        const nextTasks = todaysTasks.map(t => t.id === taskId ? { ...t, completed: newCompleted } : t);
+        setTodaysTasks(nextTasks);
+
+        // Optimistically update active roadmap task if activeTaskId is set
+        if (activeTaskId) {
+            setRoadmapItems(prev =>
+                prev.map(mod => {
+                    const updatedTasks = (mod.tasks || []).map(t =>
+                        t.id === activeTaskId ? { ...t, completed: newCompleted } : t
+                    );
+                    const everyDone = updatedTasks.length > 0 && updatedTasks.every(t => t.completed);
+                    return { ...mod, tasks: updatedTasks, completed: everyDone };
+                })
+            );
+        }
+
+        try {
+            // No `timeSpentMinutes` argument: nothing on this page measures a real
+            // duration, so the backend applies its own default instead of being
+            // credited a fabricated flat 0.5h for every toggled task.
+            const res = await toggleTask(roomId, taskId, newCompleted);
+            if (res?.progress !== undefined) {
+                setMembers(prev =>
+                    prev.map(m => m.isCurrentUser ? { ...m, progress: res.progress } : m)
+                );
+            }
+            // Refresh completion rate
+            const detailRes = await getRoomDetail(roomId);
+            if (detailRes?.room?.completionRate !== undefined) {
+                setRoomData(prev => ({ ...prev, completionRate: detailRes.room.completionRate }));
+            }
+            await fetchRoomData();
+        } catch {
+            // Rollback on failure
+            await fetchRoomData();
+        }
+    }, [roomId, todaysTasks, activeTaskId, fetchRoomData]);
+
+    // Roadmap task toggle — optimistic update + backend sync
+    const handleToggleRoadmapTask = useCallback(async (taskId, currentCompleted) => {
+        const nextCompleted = !currentCompleted;
+        setRoadmapItems(prev =>
+            prev.map(mod => {
+                const updatedTasks = (mod.tasks || []).map(t =>
+                    t.id === taskId ? { ...t, completed: nextCompleted } : t
+                );
+                const everyDone = updatedTasks.length > 0 && updatedTasks.every(t => t.completed);
+                return {
+                    ...mod,
+                    tasks: updatedTasks,
+                    completed: everyDone,
+                };
+            })
+        );
+
+        // If toggling active roadmap task, also update todaysTasks optimistically
+        if (activeTaskId && taskId === activeTaskId) {
+            setTodaysTasks(prev => prev.map(t => ({ ...t, completed: nextCompleted })));
+        }
+
+        try {
+            const res = await toggleRoadmapTask(roomId, taskId);
+            if (res?.progress !== undefined) {
+                setMembers(prev =>
+                    prev.map(m => m.isCurrentUser ? { ...m, progress: res.progress } : m)
+                );
+            }
+            await fetchRoomData();
+        } catch {
+            await fetchRoomData();
+        }
+    }, [roomId, activeTaskId, fetchRoomData]);
+
+    const handleReplanRoadmap = useCallback(async (options) => {
+        if (!roomId) return;
+        try {
+            await replanRoadmap(roomId, options);
+            await fetchRoomData();
+        } catch (err) {
+            console.error("[Room] Replan error:", err);
+            throw err;
+        }
+    }, [roomId, fetchRoomData]);
+
+    // Mobile detection
+    const [isMobile, setIsMobile] = useState(window.innerWidth <= 720);
     useEffect(() => {
         const handleResize = () => {
             const mobile = window.innerWidth <= 720;
             setIsMobile(mobile);
-            
-            if (!mobile) {
-                setShowOverlay(false);
-            } else {
-                setShowMembers(false);
-            }
+            if (!mobile) setShowOverlay(false);
+            else setShowMembers(false);
         };
-
-        window.addEventListener('resize', handleResize);
+        window.addEventListener("resize", handleResize);
         handleResize();
-        
-        return () => window.removeEventListener('resize', handleResize);
+        return () => window.removeEventListener("resize", handleResize);
     }, []);
-
-    // Fetch room data on mount
-    useEffect(() => {
-        const fetchRoomData = async () => {
-            try {
-                setIsLoading(true);
-                const response = await roomService.getRoom(roomId);
-                
-                const room = response?.room || response?.data;
-                if (response?.success && room) {
-                    const membersList = normalizeMembers(room.members || []);
-                    
-                    // Calculate days remaining based on actual end date
-                    const today = new Date();
-                    let daysRemaining = 30; // Default fallback
-                    
-                    if (room.endDate) {
-                        // Use actual end date if available
-                        const endDate = new Date(room.endDate);
-                        const timeDiff = endDate.getTime() - today.getTime();
-                        daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                    } else if (room.startDate) {
-                        // Fallback: Calculate from start date + 30 days
-                        const startDate = new Date(room.startDate);
-
-                        // If a roadmap exists, estimate end date from roadmap phases (1 phase ~= 1 week)
-                        if (room.roadmap && Array.isArray(room.roadmap.phases) && room.roadmap.phases.length > 0) {
-                            const estimatedDays = room.expectedDurationDays || room.durationDays || room.roadmap.phases.length * 7;
-                            const estimatedEnd = new Date(startDate);
-                            estimatedEnd.setDate(estimatedEnd.getDate() + estimatedDays);
-                            const timeDiff = estimatedEnd.getTime() - today.getTime();
-                            daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                        } else {
-                            const estimatedEnd = new Date(startDate);
-                            estimatedEnd.setDate(estimatedEnd.getDate() + 30);
-                            const timeDiff = estimatedEnd.getTime() - today.getTime();
-                            daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                        }
-                    } else {
-                        // Last resort: Use creation date + 30 days
-                        const createdDate = new Date(room.createdAt);
-                        const daysPassed = Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
-                        daysRemaining = Math.max(0, 30 - daysPassed);
-                    }
-                    
-                    // Calculate active users (users who have been active in last 7 days)
-                    const sevenDaysAgo = new Date();
-                    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-                    const activeUsers = membersList.filter(member => {
-                        if (member.isOnline) return true;
-                        if (member.progress && member.progress.lastActivity) {
-                            return new Date(member.progress.lastActivity) >= sevenDaysAgo;
-                        }
-                        return false;
-                    }).length;
-                    
-                    // Use room's averageProgress as the primary completion rate
-                    const completionRate = room.averageProgress || 0;
-                    
-                    // ✨ Apply timeline distribution to roadmap if it exists
-                    let processedRoadmap = room.roadmap || null;
-                    if (processedRoadmap && processedRoadmap.phases && processedRoadmap.phases.length > 0) {
-                        // Check if milestones already have dates
-                        const hasExistingDates = processedRoadmap.phases.some(phase =>
-                            phase.milestones.some(m => m.startDate || m.endDate)
-                        );
-                        
-                        // If no dates exist (old roadmap), distribute timeline
-                        if (!hasExistingDates) {
-                            console.log('⏰ Roadmap missing dates - applying timeline distribution');
-                            const totalDays = room.expectedDurationDays || room.durationDays || 30; // Use room duration or default
-                            const startDate = room.startDate ? new Date(room.startDate) : new Date();
-                            
-                            // Extract all milestones from phases
-                            const allMilestones = processedRoadmap.phases.flatMap(phase => phase.milestones);
-                            
-                            // Apply timeline distribution to milestones
-                            const distributedMilestones = distributeMilestonesAcrossTimeline(
-                                allMilestones,
-                                totalDays,
-                                startDate
-                            );
-                            
-                            // Rebuild roadmap structure with distributed milestones
-                            let milestoneIndex = 0;
-                            processedRoadmap = {
-                                ...processedRoadmap,
-                                phases: processedRoadmap.phases.map(phase => ({
-                                    ...phase,
-                                    milestones: phase.milestones.map(() => {
-                                        const distributed = distributedMilestones[milestoneIndex];
-                                        milestoneIndex++;
-                                        return distributed;
-                                    })
-                                }))
-                            };
-                        }
-                    }
-                    
-                    setRoomData({
-                        id: room.id || room._id,
-                        name: room.title,
-                        description: room.description,
-                        tags: room.tags || [],
-                        code: room.code,
-                        status: room.status,
-                        hostId: room.hostId,
-                        maxSeats: room.maxSeats,
-                        memberCount: membersList.length,
-                        createdAt: room.createdAt,
-                        daysRemaining: daysRemaining,
-                        activeUsers: activeUsers,
-                        completionRate: Math.min(completionRate, 100), // Cap at 100%
-                        roadmap: processedRoadmap,
-                    });
-                    
-                    setMembers(membersList);
-                }
-            } catch (err) {
-                console.error("Failed to fetch room data:", err);
-                setError(err.message || "Failed to load room");
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        if (roomId) {
-            fetchRoomData();
-        }
-    }, [roomId]);
-
-    // Setup Socket.IO connection
-    useEffect(() => {
-        if (!roomId) return;
-
-        // Connect to socket if not already connected
-        if (!socketService.isConnected()) {
-            socketService.connect();
-        }
-
-        // Join the room
-        socketService.joinRoom(roomId);
-        // Setup event listeners
-        // Listen for room presence updates emitted by the server
-        socketService.onRoomUsers((presence) => {
-            try {
-                console.log('roomUsers presence:', presence);
-                // Server sends an array of presence objects { id, name, ready, isOnline }
-                // Keep authoritative member list from the room GET response (members)
-                setOnlineMembers(presence || []);
-
-                setRoomData(prev => {
-                    if (!prev) return prev;
-                    return {
-                        ...prev,
-                        // Do NOT overwrite total memberCount with presence; use presence only for activeUsers
-                        activeUsers: (presence || []).filter(p => p.isOnline).length,
-                    };
-                });
-            } catch (e) {
-                console.error('Failed to handle roomUsers event', e);
-            }
-        });
-
-        // Listen for server system messages (e.g., "X joined the room") and refresh members when that happens
-        socketService.onSystemMessage((sys) => {
-            console.log('System message:', sys);
-            // Refresh room membership list to keep UI consistent
-            roomService.getRoom(roomId).then(response => {
-                if (response.success && response.room) {
-                    setMembers(normalizeMembers(response.room.members || []));
-                    // Also keep roomData memberCount consistent
-                    setRoomData(prev => prev ? { ...prev, memberCount: (response.room.members || []).length } : prev);
-                }
-            }).catch(err => console.error('Failed to refresh room after system message', err));
-        });
-
-        const handleNewMessage = (message) => {
-            console.log("New message received in room.jsx:", message);
-            // Only increment unread count if chat is closed
-            if (!showChat && !showOverlay) {
-                setUnreadCount(prev => prev + 1);
-            }
-        };
-
-        socketService.onMessage(handleNewMessage);
-
-        // Cleanup on unmount
-        return () => {
-            socketService.socket?.off('NEW_MESSAGE', handleNewMessage);
-            socketService.leaveRoom(roomId);
-        };
-    }, [roomId, showChat, showOverlay, normalizeMembers]);
-
-    // Extract roadmap items from room data if available (memoized to prevent infinite loops)
-    const roadmapItems = React.useMemo(() => {
-        if (!roomData || !roomData.roadmap || !roomData.roadmap.phases) {
-            return [];
-        }
-        
-        // ✨ NEW: Get current user's progress
-        const currentUserMember = roomData.members?.find(m => {
-            const memberUserId = m.userId?._id || m.userId;
-            return String(memberUserId) === String(currentUserId);
-        });
-        const currentMilestoneId = currentUserMember?.progress?.currentMilestoneId;
-        const currentTopicTitle = currentUserMember?.progress?.currentTopicTitle;
-        
-        console.log('📍 User current position:', { currentMilestoneId, currentTopicTitle });
-        
-        const milestones = roomData.roadmap.phases.flatMap((phase, phaseIndex) => 
-            phase.milestones.map((milestone, milestoneIndex) => {
-                // Calculate week number based on actual start date
-                let weekNumber = phaseIndex + 1; // Default fallback
-                if (milestone.startDate && roomData.roadmap.phases[0].milestones[0].startDate) {
-                    const roadmapStart = new Date(roomData.roadmap.phases[0].milestones[0].startDate);
-                    const milestoneStart = new Date(milestone.startDate);
-                    const daysDiff = Math.floor((milestoneStart - roadmapStart) / (1000 * 60 * 60 * 24));
-                    weekNumber = Math.floor(daysDiff / 7) + 1;
-                }
-                
-                // Check if milestone is completed based on all topics being completed
-                const totalTopics = milestone.topics ? milestone.topics.length : 0;
-                const completedTopicsCount = milestone.topics ? milestone.topics.filter((t) => {
-                    if (typeof t !== 'object') return false;
-                    return t.status === 'completed' || t.isCompleted === true;
-                }).length : 0;
-                const completed = totalTopics > 0 && completedTopicsCount >= totalTopics;
-                
-                // ✨ NEW: Milestone is current if it matches user's currentMilestoneId
-                const syntheticMilestoneId = `p${phaseIndex}m${milestoneIndex}`;
-                const backendMilestoneId = milestone.milestoneId || milestone._id?.toString() || milestone.id || syntheticMilestoneId;
-                
-                return {
-                    id: syntheticMilestoneId,
-                    _id: milestone._id,
-                    phaseIndex,
-                    milestoneIndex,
-                    title: milestone.title,
-                    description: milestone.description,
-                    week: weekNumber,
-                    completed: completed,
-                    topics: milestone.topics || [],
-                    estimatedHours: milestone.estimatedHours || 1,
-                    startDate: milestone.startDate,
-                    endDate: milestone.endDate,
-                    durationDays: milestone.durationDays,
-                    completedTopics: completedTopicsCount,
-                    currentTopicTitle: undefined, // Will be set below
-                    current: false, // Will be set below
-                    milestoneId: backendMilestoneId, // Real ID used by backend endpoints
-                    backendMilestoneId,
-                };
-            })
-        );
-        
-        // ✨ Determine which milestone is "current"
-        let currentMilestoneSet = false;
-        
-        // If user has a saved currentMilestoneId, use that
-        if (currentMilestoneId) {
-            const currentMilestone = milestones.find(m => m.milestoneId === currentMilestoneId);
-            if (currentMilestone) {
-                if (!currentMilestone.completed) {
-                    currentMilestone.current = true;
-                    currentMilestone.currentTopicTitle = currentTopicTitle;
-                    currentMilestoneSet = true;
-                    console.log(`✅ Using saved position: ${currentMilestone.title}`);
-                } else {
-                    console.log(`⚠️ Saved position ${currentMilestone.title} is completed, falling back to first uncompleted...`);
-                }
-            }
-        }
-        
-        // FALLBACK: If no saved position, mark first uncompleted milestone as current
-        if (!currentMilestoneSet) {
-            const firstUncompleted = milestones.find(m => !m.completed);
-            if (firstUncompleted) {
-                firstUncompleted.current = true;
-                console.log(`📌 Fallback: First uncompleted milestone is ${firstUncompleted.title}`);
-            }
-        }
-        
-        return milestones;
-    }, [roomData, currentUserId]);
-    
-    // State for today's tasks (to allow updates)
-    const [todaysTasks, setTodaysTasks] = useState([]);
-    
-    // ✨ NEW: Generate today's tasks from first active milestone using task generator
-    useEffect(() => {
-        if (!Array.isArray(roadmapItems) || roadmapItems.length === 0) {
-            setTodaysTasks([]);
-            return;
-        }
-        
-        try {
-            console.log('🔍 Generating tasks from roadmapItems:', roadmapItems);
-            console.log('🔍 First roadmapItem:', roadmapItems[0]);
-            
-            // Generate tasks from first active milestone
-            const tasks = generateTodaysTasks(roadmapItems);
-            
-            console.log('🔍 Generated tasks from taskGenerator:', tasks);
-            
-            // Format for UI (map topic titles to task structure)
-            // ✨ FIX: Use milestone's array indices for backend identification
-            const formattedTasks = tasks.map((task) => {
-                // Find the original roadmap item to get the phase/milestone indices
-                const originalMilestone = roadmapItems.find(item => 
-                    item.id === task.milestoneId
-                );
-                
-                if (!originalMilestone) {
-                    console.error('❌ Could not find milestone for task:', task);
-                    return null;
-                }
-                
-                // ✨ Use milestone's position in roadmap for backend identification
-                const milestoneIdentifier = `p${originalMilestone.phaseIndex}m${originalMilestone.milestoneIndex}`;
-                
-                console.log(`🔍 Task "${task.title}":`, {
-                    taskMilestoneId: task.milestoneId,
-                    foundMilestone: true,
-                    phaseIndex: originalMilestone.phaseIndex,
-                    milestoneIndex: originalMilestone.milestoneIndex,
-                    milestoneIdentifier,
-                    backendMilestoneId: originalMilestone.backendMilestoneId,
-                    topicOrder: task.order
-                });
-                
-                return {
-                    id: `task-${milestoneIdentifier}-${task.order}`,
-                    title: task.title,
-                    milestone: task.milestone,
-                    milestoneId: originalMilestone.backendMilestoneId || milestoneIdentifier,
-                    phaseIndex: originalMilestone.phaseIndex, // ✨ For backend
-                    milestoneIndex: originalMilestone.milestoneIndex, // ✨ For backend
-                    order: task.order, // ✨ Original index in milestone.topics array
-                    completed: task.status === 'completed',
-                    timeSpent: "0h 0m",
-                    estimatedHours: task.estimatedHours || 1,
-                };
-            }).filter(Boolean); // Remove nulls
-            
-            console.log('🔍 Final formattedTasks:', formattedTasks);
-            
-            setTodaysTasks(formattedTasks);
-        } catch (error) {
-            console.error('Error generating today\'s tasks:', error);
-            setTodaysTasks([]);
-        }
-    }, [roadmapItems]); // Safe now - roadmapItems is memoized
-    
-    // Handler to update task completion
-    const handleTaskComplete = async (data) => {
-        console.log('Task completed:', data);
-        
-        // Find the completed task to get milestoneId and order
-        const completedTask = todaysTasks.find(task => task.id === data.taskId);
-        
-        // Update the task to show as completed with time spent
-        setTodaysTasks(prevTasks => 
-            prevTasks.map(task => 
-                task.id === data.taskId 
-                    ? { ...task, completed: true, timeSpent: data.timeSpent }
-                    : task
-            )
-        );
-        
-        // Set user as idle after completing task (both systems)
-        legacySetIdle();
-        setPresenceIdle();
-        
-        // ✨ NEW: Save completion to backend database
-        // Skip database save for milestone-based tasks (those are completed via "Mark Complete" button in StudyLayout)
-        if (data.isMilestoneTask) {
-            console.log('⏭️ Skipping database save for milestone-based task - use "Mark Complete" button in study panel');
-        } else if (completedTask && completedTask.milestoneId && typeof completedTask.order === 'number') {
-            console.log('💾 Saving topic completion to database...');
-            await handleTopicComplete(completedTask);
-        } else {
-            console.warn('⚠️ Cannot save completion - task missing milestoneId or order:', completedTask);
-        }
-        
-        // Success - logged in console
-        console.log(`✅ Great job! You focused for ${data.timeSpent}. 🎉`);
-    };
-
-    // Handler to mark a topic as complete (from Today's Tasks checkbox)
-    const handleTopicComplete = async (task) => {
-        console.log('🔔 handleTopicComplete called with task:', task);
-        console.log('   task.milestoneId:', task.milestoneId);
-        console.log('   task.order:', task.order);
-        
-        // If called from study panel completion (already completed by backend)
-        // Just refetch the data to update UI
-        if (!task.milestoneId || typeof task.order !== 'number') {
-            console.log('ℹ️ Topic already completed via study panel, refetching room data...');
-            try {
-                await refetchRoom();
-                console.log('✅ Room data refetched after topic completion');
-            } catch (error) {
-                console.error('❌ Failed to refetch room data:', error);
-            }
-            return;
-        }
-
-        // ✨ 1. Optimistic update - Mark task as completed locally for instant feedback
-        setTodaysTasks(prevTasks => 
-            prevTasks.map(t => 
-                t.id === task.id 
-                    ? { ...t, completed: true }
-                    : t
-            )
-        );
-
-        try {
-            console.log(`📡 Calling backend API: PATCH /api/rooms/${roomId}/milestone/${task.milestoneId}/topic/${task.order}/complete`);
-            
-            // ✨ 2. Call backend to mark topic complete and recalculate progress
-            const response = await roomService.completeTopicAndUpdateProgress(
-                roomId,
-                task.milestoneId,
-                task.order
-            );
-
-            console.log('📥 Backend response:', response);
-
-            if (response.success) {
-                console.log('✅ Topic marked complete on backend! Refetching room data...');
-                
-                // ✨ Dispatch custom event so dashboard todaysTaskBlock auto-refetches
-                window.dispatchEvent(new CustomEvent('task-completed', { 
-                    detail: { topicTitle: task.title, roomId: roomId }
-                }));
-                
-                // ✨ 3. Refetch the entire room to get fresh data from MongoDB
-                const roomResponse = await roomService.getRoom(roomId);
-                
-                if (roomResponse.success && roomResponse.room) {
-                    const room = roomResponse.room;
-                    
-                    // Recalculate days remaining
-                    const today = new Date();
-                    let daysRemaining = 30;
-                    if (room.endDate) {
-                        const endDate = new Date(room.endDate);
-                        const timeDiff = endDate.getTime() - today.getTime();
-                        daysRemaining = Math.max(0, Math.ceil(timeDiff / (1000 * 60 * 60 * 24)));
-                    }
-                    
-                    // ✨ 4. Update room data completely (triggers roadmapItems recalculation)
-                    setRoomData(prevData => {
-                        console.log('📊 Progress update:', {
-                            oldProgress: prevData.completionRate,
-                            newProgress: room.averageProgress,
-                            completedTopics: response.completedTopics || '?',
-                            totalTopics: response.totalTopics || '?',
-                        });
-                        
-                        return {
-                            ...prevData,
-                            roadmap: room.roadmap,
-                            averageProgress: room.averageProgress,
-                            completionRate: Math.min(room.averageProgress || 0, 100), // ✨ Update the UI progress bar
-                            members: room.members,
-                            daysRemaining: daysRemaining,
-                        };
-                    });
-                    
-                    console.log('✅ Room data refreshed from server');
-                    
-                    // ✨ 5. Check if all today's tasks are now complete
-                    const allComplete = todaysTasks.every(t => t.id === task.id || t.completed);
-                    if (allComplete) {
-                        console.log('🎉 All today\'s tasks complete!');
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('❌ Error completing topic:', error);
-            console.error('   Error details:', error.response || error.message);
-            
-            // ✨ 6. Rollback optimistic update on error
-            setTodaysTasks(prevTasks => 
-                prevTasks.map(t => 
-                    t.id === task.id 
-                        ? { ...t, completed: false }
-                        : t
-                )
-            );
-        }
-    };
-    
-    // Update user activity when working on a milestone
-    const handleMilestoneStart = (milestone) => {
-        if (milestone && milestone.title) {
-            // Update both presence systems
-            legacyUpdateActivity(
-                roomData?.name || 'Study Room',
-                milestone.title
-            );
-            updatePresenceActivity(`Studying: ${milestone.title}`);
-        }
-    };
-
-    // Move to next day/milestone manually
-    const handleContinueToNextDay = () => {
-        // Refetch room data to get new tasks based on updated timeline
-        const fetchUpdatedRoom = async () => {
-            try {
-                const updatedRoom = await roomService.getRoom(roomId);
-                setRoomData(updatedRoom);
-                setMembers(updatedRoom.members || []);
-                console.log('✅ Moved to next day - new tasks loaded');
-            } catch (error) {
-                console.error('❌ Failed to load next tasks:', error);
-            }
-        };
-        fetchUpdatedRoom();
-    };
 
     // Handlers
     const handleLeaveRoom = async () => {
-        if (window.confirm("Are you sure you want to leave this room?")) {
+        // Say it up front. Once the last member leaves, the room and everything in
+        // it is deleted — there is no way back.
+        const warning = "Are you sure you want to leave this room?\n\nIf you are the last member, the room will be deleted.";
+        if (window.confirm(warning)) {
+            let deleted = false;
             try {
-                console.log('Leaving room:', roomId);
-                const response = await roomService.leaveRoom(roomId);
-                console.log('Leave room response:', response);
-                
-                // Leave the socket room as well
-                socketService.leaveRoom(roomId);
-                
-                // Trigger a custom event to notify other components to refresh
-                window.dispatchEvent(new CustomEvent('roomListChanged'));
-                
-                // Navigate to home
-                navigate("/home");
+                const res = await leaveRoomApi(roomId);
+                deleted = !!res?.roomDeleted;
             } catch (err) {
-                console.error("Failed to leave room:", err);
-                const status = err?.status;
-                const backendMessage = err?.data?.message || err?.data?.error?.message;
-                console.error('Leave room request details:', {
-                    status,
-                    backendMessage,
-                    message: err?.message,
-                });
-                console.error(backendMessage || err.message || "Failed to leave room. Please try again.");
+                console.warn("Leave room backend note:", err?.message);
             }
+            navigate("/home", {
+                replace: true,
+                state: deleted
+                    ? { toast: "You were the last member — the room was deleted." }
+                    : null
+            });
         }
     };
 
@@ -765,11 +410,15 @@ const Room = () => {
             // On mobile: show overlay with chat content
             setOverlayContent('chat');
             setShowOverlay(true);
-            setUnreadCount(0); // Clear unread count when opening chat overlay
+            setUnreadCount(0);
         } else {
             // On desktop: toggle chat modal
             setShowChat(!showChat);
             if (!showChat) {
+                // No fetch here. ChatModal fetches the same history the moment it
+                // opens, and closing it re-arms the poll effect above with a fresh
+                // `seeded = false`, whose first tick re-seeds lastSeenMsgRef to the
+                // latest id. Seeding twice bought nothing and doubled the request.
                 setUnreadCount(0); // Clear unread count when opening chat
             }
         }
@@ -812,124 +461,97 @@ const Room = () => {
         }
     };
 
-    // Show loading state while room data is loading
-    if (isLoading) {
-        return (
-            <div className="min-h-screen bg-gradient flex items-center justify-center">
-                <div className="text-center">
-                    <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary mx-auto mb-4"></div>
-                    <p className="text-[var(--color-text)] text-lg">Loading room...</p>
-                </div>
-            </div>
-        );
-    }
-
-    // Show error state if room data failed to load
-    if (error || !roomData) {
-        return (
-            <div className="min-h-screen bg-gradient flex items-center justify-center">
-                <div className="text-center bg-red-500/10 border border-red-500/20 rounded-lg p-8 max-w-md">
-                    <p className="text-red-500 text-xl mb-4">Failed to load room</p>
-                    <p className="text-[var(--color-text)]/70 mb-6">{error || 'Room not found'}</p>
-                    <button 
-                        onClick={() => navigate('/home')}
-                        className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/80 transition-colors"
-                    >
-                        Back to Home
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
     return (
-        <ErrorBoundary>
-            <div className={`min-h-screen bg-gradient transition-colors duration-300 ${
-                isMobile ? '' : 'md:ml-20'
-            }`}>
-                {/* Room Header */}
-                <RoomHeader 
-                    roomData={roomData}
-                    activeView={activeView}
-                    onViewChange={setActiveView}
-                    onSettingsToggle={() => setShowSettings(!showSettings)}
-                    onChatToggle={handleChatToggle}
-                    onMembersToggle={handleMembersToggle}
-                    showChat={showChat}
-                    showMembers={showMembers} // This will be false by default
-                    unreadCount={unreadCount}
-                />
+        <div className={`min-h-screen bg-gradient transition-colors duration-300 ${
+            isMobile ? '' : 'md:ml-20'
+        }`}>
+            {/* Room Header */}
+            <RoomHeader 
+                roomData={roomData}
+                activeView={activeView}
+                onViewChange={setActiveView}
+                onSettingsToggle={() => setShowSettings(!showSettings)}
+                onChatToggle={handleChatToggle}
+                onMembersToggle={handleMembersToggle}
+                showChat={showChat}
+                showMembers={showMembers} // This will be false by default
+                unreadCount={unreadCount}
+                // Live presence, straight from the socket. Rendered as a "N online"
+                // pill so a peer arriving is visible immediately instead of only
+                // becoming apparent after opening the chat panel.
+                onlineUserIds={onlineUserIds}
+            />
 
-                {/* Main Content */}
-                <motion.div
-                    variants={containerVariants}
-                    initial="hidden"
-                    animate="visible"
-                    className="h-[calc(100vh-120px)]"
-                >
-                    <AnimatePresence mode="wait">
-                        <motion.div
-                            key={activeView}
-                            variants={itemVariants}
-                            initial="hidden"
-                            animate="visible"
-                            exit="hidden"
-                            className="h-full"
-                        >
-                            <RoomContent 
-                                activeView={activeView}
-                                roomData={roomData}
-                                members={members}
-                                onlineMembers={onlineMembers}
-                                todaysTasks={todaysTasks}
-                                roadmapItems={roadmapItems}
-                                showMembers={!isMobile && showMembers} // Only show on desktop when toggled
-                                onTaskComplete={handleTaskComplete}
-                                onTopicComplete={handleTopicComplete}
-                                onContinueToNextDay={handleContinueToNextDay}
-                                onViewChange={setActiveView}
-                                onRefetchRoom={refetchRoomData}
-                                // Discord presence functions
-                                getUserPresence={getUserPresence}
-                                isUserOnline={isUserOnline}
-                            />
-                        </motion.div>
-                    </AnimatePresence>
-                </motion.div>
-
-                {/* Mobile Overlay */}
-                <AnimatePresence>
-                    {isMobile && showOverlay && (
-                        <RoomOverlay
-                            content={overlayContent}
-                            members={members}
+            {/* Main Content */}
+            <motion.div
+                variants={containerVariants}
+                initial="hidden"
+                animate="visible"
+                className="h-[calc(100vh-120px)]"
+            >
+                <AnimatePresence mode="wait">
+                    <motion.div
+                        key={activeView}
+                        variants={itemVariants}
+                        initial="hidden"
+                        animate="visible"
+                        exit="hidden"
+                        className="h-full"
+                    >
+                        <RoomContent
+                            activeView={activeView}
                             roomData={roomData}
-                            unreadCount={unreadCount}
-                            onClose={handleCloseOverlay}
-                            roomId={roomId}
+                            members={members}
+                            todaysTasks={todaysTasks}
+                            roadmapItems={roadmapItems}
+                            showMembers={!isMobile && showMembers}
+                            onToggleTask={handleToggleTask}
+                            onToggleRoadmapTask={handleToggleRoadmapTask}
+                            /* The checkpoint task is a real test, not a checkbox —
+                               "Take Test" moves to the quiz view rather than
+                               marking itself done without being taken. */
+                            onOpenQuiz={() => setActiveView("quiz")}
+                            loading={loading}
+                            roadmapGeneratedBy={roadmapGeneratedBy}
+                            scheduleState={scheduleState}
+                            onReplanRoadmap={handleReplanRoadmap}
                         />
-                    )}
+                    </motion.div>
                 </AnimatePresence>
+            </motion.div>
 
-                {/* Desktop Settings Modal */}
-                <SettingsModal 
-                    showSettings={showSettings}
-                    onClose={() => setShowSettings(false)}
-                    onLeaveRoom={handleLeaveRoom}
-                    roomData={roomData}
-                />
+            {/* Mobile Overlay */}
+            <AnimatePresence>
+                {isMobile && showOverlay && (
+                    <RoomOverlay
+                        content={overlayContent}
+                        members={members}
+                        roomData={roomData}
+                        unreadCount={unreadCount}
+                        onClose={handleCloseOverlay}
+                        roomId={roomId}
+                    />
+                )}
+            </AnimatePresence>
 
-                {/* Desktop Chat Modal - Only shows on desktop */}
-                <ChatModal 
-                    isOpen={showChat && !isMobile}
-                    onClose={handleChatClose}
-                    roomName={roomData?.name || 'Loading...'}
-                    onlineCount={roomData?.activeUsers || 0}
-                    totalMembers={roomData?.memberCount || members.length}
-                    roomId={roomId}
-                />
-            </div>
-        </ErrorBoundary>
+            {/* Desktop Settings Modal */}
+            <SettingsModal 
+                showSettings={showSettings}
+                onClose={() => setShowSettings(false)}
+                onLeaveRoom={handleLeaveRoom}
+                roomData={roomData}
+                isRoomAdmin={roomData.isCreator}
+            />
+
+            {/* Desktop Chat Modal - Only shows on desktop */}
+            <ChatModal 
+                isOpen={showChat && !isMobile}
+                onClose={handleChatClose}
+                roomName={roomData.name}
+                roomId={roomId}
+                onMessagesRead={() => setUnreadCount(0)}
+            />
+        </div>
     );
 };
 

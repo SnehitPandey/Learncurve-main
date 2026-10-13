@@ -1,27 +1,54 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, X, Clock, Users, Globe, Sparkles, Calendar, ChevronDown } from "lucide-react";
+import { Plus, X, Clock, Users, Sparkles, ChevronDown } from "lucide-react";
 import { Button, Badge } from "../../elements/elements";
-import TagInput from "./TagInput";
+
+const PRESET_OPTIONS = [
+    { value: "2weeks", label: "2 Weeks", days: 14 },
+    { value: "3weeks", label: "3 Weeks", days: 21 },
+    { value: "1month", label: "1 Month", days: 30 },
+    { value: "6weeks", label: "6 Weeks", days: 42 },
+    { value: "2months", label: "2 Months", days: 60 },
+    { value: "3months", label: "3 Months", days: 90 },
+    { value: "4months", label: "4 Months", days: 120 },
+    { value: "5months", label: "5 Months", days: 150 },
+    { value: "6months", label: "6 Months", days: 180 }
+];
+
+const DEFAULT_TIMEFRAME = "1month";
 
 // Custom Timeline Modal Component
 const CustomTimelineModal = ({ isOpen, onClose, onSelect, currentValue }) => {
-    const [selectedTimeframe, setSelectedTimeframe] = useState(currentValue || "1month");
+    const [selectedTimeframe, setSelectedTimeframe] = useState(currentValue || DEFAULT_TIMEFRAME);
     const [customDays, setCustomDays] = useState(30);
     const [customMonths, setCustomMonths] = useState(1);
     const [useCustom, setUseCustom] = useState(false);
 
-    const presetOptions = [
-        { value: "2weeks", label: "2 Weeks", days: 14 },
-        { value: "3weeks", label: "3 Weeks", days: 21 },
-        { value: "1month", label: "1 Month", days: 30 },
-        { value: "6weeks", label: "6 Weeks", days: 42 },
-        { value: "2months", label: "2 Months", days: 60 },
-        { value: "3months", label: "3 Months", days: 90 },
-        { value: "4months", label: "4 Months", days: 120 },
-        { value: "5months", label: "5 Months", days: 150 },
-        { value: "6months", label: "6 Months", days: 180 }
-    ];
+    const presetOptions = PRESET_OPTIONS;
+
+    // Re-sync from the parent each time the modal opens. Without this the state
+    // kept whatever was chosen the first time, and a stored "custom-<days>"
+    // value made `presetOptions.find(...)` return undefined below.
+    useEffect(() => {
+        if (!isOpen) return;
+        const value = currentValue || DEFAULT_TIMEFRAME;
+        const preset = PRESET_OPTIONS.find(opt => opt.value === value);
+        if (preset) {
+            setSelectedTimeframe(preset.value);
+            setUseCustom(false);
+        } else if (value.startsWith("custom-")) {
+            const totalDays = parseInt(value.slice("custom-".length), 10);
+            setSelectedTimeframe(value);
+            setUseCustom(true);
+            if (Number.isFinite(totalDays) && totalDays > 0) {
+                setCustomMonths(Math.floor(totalDays / 30));
+                setCustomDays(totalDays % 30);
+            }
+        } else {
+            setSelectedTimeframe(DEFAULT_TIMEFRAME);
+            setUseCustom(false);
+        }
+    }, [isOpen, currentValue]);
 
     const handleSelect = () => {
         if (useCustom) {
@@ -32,7 +59,14 @@ const CustomTimelineModal = ({ isOpen, onClose, onSelect, currentValue }) => {
             onSelect(`custom-${totalDays}`, customLabel);
         } else {
             const selected = presetOptions.find(opt => opt.value === selectedTimeframe);
-            onSelect(selected.value, selected.label);
+            if (!selected) {
+                // Unknown value (e.g. a hand-edited "custom-…") — fall back to the
+                // default preset rather than throwing on `selected.value`.
+                const fallback = presetOptions.find(opt => opt.value === DEFAULT_TIMEFRAME) || presetOptions[0];
+                onSelect(fallback.value, fallback.label);
+            } else {
+                onSelect(selected.value, selected.label);
+            }
         }
         onClose();
     };
@@ -183,7 +217,7 @@ const CustomTimelineModal = ({ isOpen, onClose, onSelect, currentValue }) => {
     );
 };
 
-const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceedToPreview }) => {
+const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceedToPreview, aiError, onRetryAi, onUseTemplate }) => {
     const [newTag, setNewTag] = useState("");
     const [showCustomTimelineModal, setShowCustomTimelineModal] = useState(false);
 
@@ -226,11 +260,10 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
             <div className="space-y-6">
                 <div>
                     <h2 className="text-xl md:text-2xl font-bold text-text mb-2">What do you want to learn?</h2>
-                    <p className="text-text/60 text-sm md:text-base">Tell us your learning goal and select relevant topics</p>
+                    <p className="text-text/60 text-sm md:text-base">Tell us your learning goal and select relevant tags</p>
                 </div>
 
-                <div className="space-y-6">
-                    {/* Learning Goal Input */}
+                <div className="space-y-4">
                     <div>
                         <label className="block text-sm font-medium text-text mb-2">
                             Learning Goal <span className="text-red-500">*</span>
@@ -248,38 +281,108 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
                         </div>
                     </div>
 
-                    {/* Description Input */}
                     <div>
                         <label className="block text-sm font-medium text-text mb-2">
-                            Description (Optional)
+                            Selected Tags ({formData.selectedTags.length}/10)
                         </label>
-                        <textarea
-                            value={formData.description || ""}
-                            onChange={(e) => updateFormData("description", e.target.value)}
-                            placeholder="Describe what you want to achieve..."
-                            className="w-full px-4 py-3 bg-background border border-text/20 rounded-xl text-text placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/30 resize-none"
-                            rows={2}
-                            maxLength={500}
-                        />
-                        <div className="text-xs text-text/50 mt-1">
-                            {(formData.description || "").length}/500 characters
-                        </div>
-                    </div>
+                        
+                        {formData.selectedTags.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mb-3 p-3 bg-text/5 rounded-lg">
+                                {formData.selectedTags.map(tag => (
+                                    <Badge 
+                                        key={tag}
+                                        variant="secondary" 
+                                        className="bg-primary/10 text-primary flex items-center gap-1 px-3 py-1"
+                                    >
+                                        {tag}
+                                        <button
+                                            onClick={() => removeTag(tag)}
+                                            className="ml-1 hover:text-primary/70 transition-colors"
+                                            type="button"
+                                            aria-label={`Remove ${tag} tag`}
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    </Badge>
+                                ))}
+                            </div>
+                        )}
+                        
+                        {formData.selectedTags.length < 10 && (
+                            <div className="flex gap-2 mb-3">
+                                <input
+                                    type="text"
+                                    value={newTag}
+                                    onChange={(e) => setNewTag(e.target.value)}
+                                    placeholder="Add custom tag..."
+                                    className="flex-1 px-3 py-2 bg-background border border-text/20 rounded-lg text-sm text-text placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                    onKeyPress={handleKeyPress}
+                                    maxLength={50}
+                                />
+                                <Button 
+                                    variant="outline" 
+                                    size="sm" 
+                                    onClick={addCustomTag}
+                                    disabled={!newTag.trim()}
+                                    type="button"
+                                >
+                                    <Plus className="w-4 h-4" />
+                                </Button>
+                            </div>
+                        )}
 
-                    {/* Tag Input Component */}
-                    <div>
-                        <label className="block text-sm font-medium text-text mb-2">
-                            Learning Topics <span className="text-red-500">*</span>
-                        </label>
-                        <TagInput
-                            tags={formData.selectedTags}
-                            onChange={(tags) => updateFormData("selectedTags", tags)}
-                            maxTags={10}
-                            placeholder="Add learning topics (e.g., React, JavaScript)"
-                        />
-                        <p className="text-xs text-text/50 mt-2">
-                            💡 Tags help generate a personalized learning roadmap for your room
-                        </p>
+                        <div>
+                            <p className="text-sm text-text/60 mb-2">Suggested tags:</p>
+                            <div className="flex flex-wrap gap-2">
+                                {suggestedTags
+                                    .filter(tag => !formData.selectedTags.includes(tag))
+                                    .map(tag => (
+                                    <button
+                                        key={tag}
+                                        onClick={() => addTag(tag)}
+                                        disabled={formData.selectedTags.length >= 10}
+                                        className="px-3 py-1 text-sm bg-alt/20 hover:bg-primary/10 text-text hover:text-primary rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                        type="button"
+                                    >
+                                        {tag}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="pt-4 border-t border-text/10 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-text mb-2">
+                                    What should you be able to do at the end? <span className="text-text/40 text-xs font-normal">(Optional)</span>
+                                </label>
+                                <select
+                                    value={formData.goalType || ""}
+                                    onChange={(e) => updateFormData("goalType", e.target.value)}
+                                    className="w-full px-4 py-2.5 bg-background border border-text/20 rounded-xl text-text text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                >
+                                    <option value="">Select target goal type...</option>
+                                    <option value="job_interview">Job Interview Preparation</option>
+                                    <option value="project">Build a Real Project</option>
+                                    <option value="exam_cert">Exam or Certification</option>
+                                    <option value="career_switch">Career Switch</option>
+                                    <option value="hobby">Hobby / Personal Interest</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <input
+                                    type="text"
+                                    value={formData.outcome || ""}
+                                    onChange={(e) => updateFormData("outcome", e.target.value)}
+                                    placeholder="Target outcome (e.g., Build and ship a full-stack SaaS app)"
+                                    className="w-full px-4 py-2.5 bg-background border border-text/20 rounded-xl text-sm text-text placeholder-text/50 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                    maxLength={200}
+                                />
+                                <div className="text-xs text-text/50 mt-1">
+                                    {(formData.outcome || "").length}/200 characters
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -290,19 +393,19 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
     if (currentStep === 2) {
         const proficiencyOptions = [
             { 
-                value: "Beginner", 
+                value: "beginner", 
                 label: "Beginner", 
                 description: "New to this topic",
                 icon: "🌱"
             },
             { 
-                value: "Intermediate", 
+                value: "intermediate", 
                 label: "Intermediate", 
                 description: "Some experience, want to level up",
                 icon: "🌿"
             },
             { 
-                value: "Advanced", 
+                value: "advanced", 
                 label: "Advanced", 
                 description: "Looking to master advanced concepts",
                 icon: "🌳"
@@ -347,6 +450,23 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
                             </div>
                         </motion.div>
                     ))}
+                </div>
+
+                <div className="pt-4 border-t border-text/10">
+                    <label className="block text-sm font-medium text-text mb-2">
+                        What do you already know about this? <span className="text-text/40 text-xs font-normal">(Optional)</span>
+                    </label>
+                    <textarea
+                        value={formData.priorKnowledge || ""}
+                        onChange={(e) => updateFormData("priorKnowledge", e.target.value)}
+                        placeholder="Tell us any prior experience or prerequisites you already have (e.g., I know basic JavaScript and Git, but no React)."
+                        className="w-full px-4 py-3 bg-background border border-text/20 rounded-xl text-text placeholder-text/50 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none"
+                        rows={3}
+                        maxLength={400}
+                    />
+                    <div className="text-xs text-text/50 mt-1">
+                        {(formData.priorKnowledge || "").length}/400 characters
+                    </div>
                 </div>
             </div>
         );
@@ -493,9 +613,9 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
     // Step 4: Preferences
     if (currentStep === 4) {
         const learningStyles = [
-            { value: "solo", label: "Solo Learning", icon: "🧑‍💻", description: "Study independently" },
-            { value: "pair", label: "Pair Learning", icon: "👥", description: "Work with a partner" },
-            { value: "group", label: "Group Learning", icon: "👨‍👩‍👧‍👦", description: "Learn in a team" }
+            { value: "solo", label: "Solo Learning", icon: "🧑‍💻", description: "Study independently (1 member)" },
+            { value: "pair", label: "Pair Learning", icon: "👥", description: "Work with a partner (2 members)" },
+            { value: "group", label: "Group Learning", icon: "👨‍👩‍👧‍👦", description: "Learn in a team (5 members)" }
         ];
 
         const availabilityOptions = [
@@ -618,141 +738,98 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
                     <p className="text-text/60 text-sm md:text-base">Based on your answers, here's what you could achieve</p>
                 </div>
 
+                {aiError && (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-600 dark:text-amber-400 text-xs flex items-center justify-between">
+                        <span>{aiError}</span>
+                        {onRetryAi && (
+                            <button onClick={onRetryAi} className="font-semibold underline ml-2 hover:opacity-80">
+                                Retry AI
+                            </button>
+                        )}
+                    </div>
+                )}
+
                 <div className="space-y-4">
-                    {/* AI Summary - Main overview */}
-                    {aiSummary.aiSummary && (
+                    {aiSummary.estimatedGain ? (
                         <motion.div 
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
-                            className="bg-primary/5 border border-primary/20 rounded-xl p-4 md:p-5"
+                            className="bg-primary/5 border border-primary/20 rounded-xl p-4"
                         >
                             <h3 className="font-semibold text-text mb-2 flex items-center gap-2">
                                 <span className="text-primary">🎯</span>
                                 Estimated Proficiency Gain
                             </h3>
-                            <p className="text-text/80 leading-relaxed">{aiSummary.aiSummary}</p>
-                            {aiSummary.estimatedCompletion && (
-                                <p className="text-text/60 text-sm mt-2">
-                                    Expected completion: {aiSummary.estimatedCompletion}
-                                </p>
-                            )}
+                            <p className="text-text/80">{aiSummary.estimatedGain}</p>
                         </motion.div>
-                    )}
+                    ) : null}
 
-                    {/* Timeline Feedback */}
-                    {aiSummary.aiFeedback && (
+                    {Array.isArray(aiSummary.roadmapPreview) && aiSummary.roadmapPreview.length > 0 && (
                         <motion.div 
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: 0.1 }}
-                            className={`border rounded-xl p-4 md:p-5 ${
-                                aiSummary.aiFeedback.toLowerCase().includes('too short') || 
-                                aiSummary.aiFeedback.toLowerCase().includes('challenging') ||
-                                aiSummary.aiFeedback.toLowerCase().includes('ambitious')
-                                    ? 'bg-orange-500/5 border-orange-500/30 dark:border-orange-500/20'
-                                    : 'bg-green-500/5 border-green-500/30 dark:border-green-500/20'
-                            }`}
-                        >
-                            <h3 className="font-semibold text-text mb-2 flex items-center gap-2">
-                                <span className="text-primary">⏱️</span>
-                                Timeline Feedback
-                            </h3>
-                            <p className="text-text/80 leading-relaxed text-sm md:text-base">{aiSummary.aiFeedback}</p>
-                        </motion.div>
-                    )}
-
-                    {/* Sample Roadmap Preview */}
-                    <motion.div 
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.2 }}
-                        className="bg-alt/10 border border-text/10 rounded-xl p-4 md:p-5"
-                    >
-                        <h3 className="font-semibold text-text mb-3 flex items-center gap-2">
-                            <span className="text-primary">🗺️</span>
-                            Sample Roadmap Preview
-                        </h3>
-                        <div className="space-y-2">
-                            {aiSummary.roadmapPreview && aiSummary.roadmapPreview.map((item, index) => (
-                                <motion.div 
-                                    key={index}
-                                    initial={{ opacity: 0, x: -10 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{ delay: 0.3 + index * 0.1 }}
-                                    className="flex items-start gap-3"
-                                >
-                                    <div className="w-2 h-2 bg-primary rounded-full mt-2 flex-shrink-0" />
-                                    <span className="text-text/80 text-sm">{item}</span>
-                                </motion.div>
-                            ))}
-                        </div>
-                    </motion.div>
-
-                    {/* AI Recommendations */}
-                    {aiSummary.recommendations && aiSummary.recommendations.length > 0 && (
-                        <motion.div 
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.4 }}
-                            className="bg-blue-500/5 border border-blue-500/30 dark:border-blue-500/20 rounded-xl p-4 md:p-5"
+                            className="bg-alt/10 border border-text/10 rounded-xl p-4"
                         >
                             <h3 className="font-semibold text-text mb-3 flex items-center gap-2">
-                                <span className="text-primary">💡</span>
-                                AI Recommendations
+                                <span className="text-primary">🗺️</span>
+                                Sample Roadmap Preview
                             </h3>
-                            <ul className="space-y-2">
-                                {aiSummary.recommendations.map((rec, index) => (
-                                    <motion.li 
+                            <div className="space-y-2">
+                                {aiSummary.roadmapPreview.map((item, index) => (
+                                    <motion.div 
                                         key={index}
                                         initial={{ opacity: 0, x: -10 }}
                                         animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: 0.5 + index * 0.1 }}
-                                        className="text-text/80 text-sm flex items-start gap-3"
+                                        transition={{ delay: 0.2 + index * 0.1 }}
+                                        className="flex items-start gap-3"
                                     >
-                                        <span className="text-blue-500 mt-0.5 flex-shrink-0">•</span>
-                                        <span className="flex-1">{rec}</span>
-                                    </motion.li>
+                                        <div className="w-2 h-2 bg-primary rounded-full mt-2 flex-shrink-0" />
+                                        <span className="text-text/80 text-sm">{item}</span>
+                                    </motion.div>
                                 ))}
-                            </ul>
+                            </div>
                         </motion.div>
                     )}
 
-                    {/* Room Details Grid */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <motion.div 
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.6 }}
-                            className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4"
-                        >
-                            <h4 className="font-medium text-green-800 dark:text-green-300 mb-1 flex items-center gap-2">
-                                <Users className="w-4 h-4" />
-                                Room Size
-                            </h4>
-                            <p className="text-green-700 dark:text-green-400 text-sm">{aiSummary.suggestedRoomSize}</p>
-                        </motion.div>
-                        
-                        <motion.div 
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.7 }}
-                            className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4"
-                        >
-                            <h4 className="font-medium text-blue-800 dark:text-blue-300 mb-1 flex items-center gap-2">
-                                <Clock className="w-4 h-4" />
-                                Study Intensity
-                            </h4>
-                            <p className="text-blue-700 dark:text-blue-400 text-sm">
-                                {aiSummary.intensityLevel || aiSummary.studyIntensity}
-                            </p>
-                        </motion.div>
-                    </div>
+                    {(aiSummary.suggestedRoomSize || aiSummary.studyIntensity) && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {aiSummary.suggestedRoomSize && (
+                                <motion.div 
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: 0.3 }}
+                                    className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4"
+                                >
+                                    <h4 className="font-medium text-green-800 dark:text-green-300 mb-1 flex items-center gap-2">
+                                        <Users className="w-4 h-4" />
+                                        Room Size
+                                    </h4>
+                                    <p className="text-green-700 dark:text-green-400 text-sm">{aiSummary.suggestedRoomSize}</p>
+                                </motion.div>
+                            )}
+                            
+                            {aiSummary.studyIntensity && (
+                                <motion.div 
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: 0.4 }}
+                                    className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4"
+                                >
+                                    <h4 className="font-medium text-blue-800 dark:text-blue-300 mb-1 flex items-center gap-2">
+                                        <Clock className="w-4 h-4" />
+                                        Study Intensity
+                                    </h4>
+                                    <p className="text-blue-700 dark:text-blue-400 text-sm">{aiSummary.studyIntensity}</p>
+                                </motion.div>
+                            )}
+                        </div>
+                    )}
 
-                    {/* Create Room Button */}
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.8 }}
+                        transition={{ delay: 0.5 }}
                     >
                         <Button 
                             variant="primary" 
@@ -774,7 +851,19 @@ const RoomSteps = ({ currentStep, formData, updateFormData, aiSummary, onProceed
                 <div className="text-center py-12">
                     <div className="animate-spin w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full mx-auto mb-4"></div>
                     <h2 className="text-xl font-bold text-text mb-2">Generating AI Summary...</h2>
-                    <p className="text-text/60">Please wait while we analyze your preferences</p>
+                    <p className="text-text/60 mb-6">Analyzing your preferences and tailoring your curriculum</p>
+                    {onUseTemplate && (
+                        <div className="mt-4 pt-4 border-t border-text/10 max-w-sm mx-auto">
+                            <p className="text-xs text-text/50 mb-3">Taking longer than usual?</p>
+                            <Button
+                                variant="outline"
+                                onClick={onUseTemplate}
+                                className="text-xs px-4 py-2"
+                            >
+                                Continue with Standard Curriculum
+                            </Button>
+                        </div>
+                    )}
                 </div>
             </div>
         );

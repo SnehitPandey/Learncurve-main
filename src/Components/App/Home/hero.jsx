@@ -6,7 +6,7 @@ import BiweeklyCalendar from "./herosection/biweeklyCalendar";
 import RoomUpdates from "./herosection/roomUpdates";
 import TodaysTaskBlock from "./herosection/todaysTaskBlock";
 import MobileView from "./herosection/mobileView";
-import { apiClient } from "../../../services/api";
+import { getUserProfileAndSync } from "../../../api/users";
 
 // Custom hook to track window size
 function useWindowSize() {
@@ -30,29 +30,105 @@ function useWindowSize() {
   return windowSize;
 }
 
+// Hoisted: these were rebuilt every render and handed to children as props.
+const cardVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: (i) => ({
+    opacity: 1,
+    y: 0,
+    transition: { delay: i * 0.1, duration: 0.5, ease: "easeOut" }
+  })
+};
+
+const tabVariants = {
+  hidden: { opacity: 0, x: 20 },
+  visible: { opacity: 1, x: 0, transition: { duration: 0.3 } }
+};
+
+const welcomeVariants = {
+  hidden: { opacity: 0, y: -10 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: { duration: 0.6, ease: "easeOut" }
+  }
+};
+
+const getGreetingIcon = () => {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) {
+    return <Sunrise size={20} className="text-yellow-400" />;
+  } else if (hour >= 12 && hour < 17) {
+    return <Sun size={20} className="text-orange-400" />;
+  } else if (hour >= 17 && hour < 21) {
+    return <Sunset size={20} className="text-orange-500" />;
+  } else {
+    return <Moon size={20} className="text-blue-400" />;
+  }
+};
+
 export default function Hero() {
   const [activeTab, setActiveTab] = useState("tasks"); 
   const [greeting, setGreeting] = useState("");
+  const [userName, setUserName] = useState(() => {
+    try {
+      const raw = localStorage.getItem("user");
+      if (raw) {
+        const u = JSON.parse(raw);
+        return u.name || u.username || "Learner";
+      }
+    } catch {
+      // Corrupt/absent localStorage — fall through to the default name.
+    }
+    return "Learner";
+  });
+  // The greeting had no avatar slot at all, so the dashboard — the first screen
+  // a signed-in learner sees — showed no profile picture anywhere. Read from the
+  // session blob like the name does, and refresh with it.
+  const [avatarUrl, setAvatarUrl] = useState(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem("user") || "{}");
+      return u.avatarUrl || u.avatar_url || "";
+    } catch {
+      return "";
+    }
+  });
   const [biweeklyDays, setBiweeklyDays] = useState([]);
-  const [userName, setUserName] = useState("User");
   const { width } = useWindowSize();
 
-  // Load user name from localStorage
   useEffect(() => {
-    const loadUserName = () => {
-      const user = apiClient.getUser();
-      if (user && user.name) {
-        // Get first name only
-        const firstName = user.name.split(' ')[0];
-        setUserName(firstName);
+    // Fetch live user profile to keep name updated.
+    // `getUserProfileAndSync` (not the raw getter) also folds the result into the
+    // session blob, so the avatar below reflects the server rather than whatever
+    // was captured at sign-in.
+    let cancelled = false;
+    getUserProfileAndSync()
+      .then(res => {
+        if (cancelled) return;
+        if (res?.user?.name || res?.user?.username) {
+          setUserName(res.user.name || res.user.username);
+        }
+        const fresh = res?.user?.avatarUrl || res?.user?.avatar_url || "";
+        if (fresh) setAvatarUrl(fresh);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Keep avatar and username live with storage events
+  useEffect(() => {
+    const handleStorage = () => {
+      try {
+        const u = JSON.parse(localStorage.getItem("user") || "{}");
+        if (u.name || u.username) setUserName(u.name || u.username);
+        const url = u.avatarUrl || u.avatar_url || "";
+        if (url) setAvatarUrl(url);
+      } catch {
+        /* ignore parse errors */
       }
     };
-
-    loadUserName();
-
-    // Listen for storage changes
-    window.addEventListener('storage', loadUserName);
-    return () => window.removeEventListener('storage', loadUserName);
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
   useEffect(() => {
@@ -100,42 +176,6 @@ export default function Hero() {
     return () => clearInterval(interval);
   }, []);
 
-  const cardVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: (i) => ({
-      opacity: 1,
-      y: 0,
-      transition: { delay: i * 0.1, duration: 0.5, ease: "easeOut" }
-    })
-  };
-
-  const tabVariants = {
-    hidden: { opacity: 0, x: 20 },
-    visible: { opacity: 1, x: 0, transition: { duration: 0.3 } }
-  };
-
-  const welcomeVariants = {
-    hidden: { opacity: 0, y: -10 },
-    visible: { 
-      opacity: 1, 
-      y: 0, 
-      transition: { duration: 0.6, ease: "easeOut" }
-    }
-  };
-
-  const getGreetingIcon = () => {
-    const hour = new Date().getHours();
-    if (hour >= 5 && hour < 12) {
-      return <Sunrise size={20} className="text-yellow-400" />;
-    } else if (hour >= 12 && hour < 17) {
-      return <Sun size={20} className="text-orange-400" />;
-    } else if (hour >= 17 && hour < 21) {
-      return <Sunset size={20} className="text-orange-500" />;
-    } else {
-      return <Moon size={20} className="text-blue-400" />;
-    }
-  };
-
   const isMobile = width < 720;
 
   return (
@@ -156,7 +196,25 @@ export default function Hero() {
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                {getGreetingIcon()}
+                {/* Photo when the account has one, greeting icon otherwise. */}
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt={userName}
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      // A dead URL must not leave a broken image in the
+                      // greeting; drop back to the icon.
+                      const img = e.currentTarget;
+                      if (img.dataset.fellBack) return;
+                      img.dataset.fellBack = "1";
+                      setAvatarUrl("");
+                    }}
+                    className="w-11 h-11 rounded-full object-cover border-2 border-primary/30 flex-shrink-0"
+                  />
+                ) : (
+                  getGreetingIcon()
+                )}
                 <h1 className="text-2xl lg:text-3xl font-bold text-text">
                   {greeting}, <span className="text-primary">{userName}</span>!
                 </h1>
@@ -165,12 +223,9 @@ export default function Hero() {
           </motion.div>
 
           {/* Responsive Grid Layout */}
-          <div 
-            className="grid gap-4 
-            2xl:grid-cols-12
-            lg:grid-cols-7 md:grid-cols-6"
-            style={{ gridTemplateRows: 'max-content 1fr' }}
-          >
+          <div className="grid gap-4 
+            2xl:grid-cols-12 2xl:grid-rows-2
+            lg:grid-cols-7 lg:grid-rows-1 md:grid-cols-6 md:grid-rows-1">
             
             {/* Today's Tasks Block */}
             <motion.div
@@ -221,7 +276,7 @@ export default function Hero() {
               variants={cardVariants}
               className="
                 2xl:col-span-4 2xl:row-span-1
-                lg:col-span-7 md:col-span-6 h-full flex flex-col"
+                lg:col-span-7 lg:row-span-1 md:col-span-6 md:row-span-1"
             >
               <RoomUpdates cardVariants={cardVariants} customIndex={3} />
             </motion.div>

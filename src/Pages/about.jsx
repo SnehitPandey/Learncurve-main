@@ -16,6 +16,7 @@ export default function About() {
 
   const teamMembers = [
     // {
+    //   post: "Founder & Developer",
     //   name: "Nishant",
     //   alias: "callmenixsh",
     //   github: "https://github.com/callmenixsh",
@@ -23,6 +24,7 @@ export default function About() {
     //   image: "/assets/images/cat-rol.gif", 
     // },
     // {
+    //   post: "Co-Developer",
     //   name: "Ashutosh Jha",
     //   alias: "as018",
     //   github: "https://github.com/As190704",
@@ -30,10 +32,11 @@ export default function About() {
     //   image: "/assets/images/ashutosh.png", 
     // },    
     {
+      post: "Developer",
       name: "Snehit Pandey",
-      alias: "snehit pandey", 
+      alias: "snehit", 
       github: "https://github.com/SnehitPandey",
-      linkedin: "https://www.linkedin.com/in/snehit-pandey-315a36293?originalSubdomain=in",
+      linkedin: "https://www.linkedin.com/in/snehitpandey",
       image: "/assets/images/snehit.jpg", 
     },
   ];
@@ -54,7 +57,7 @@ export default function About() {
           animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 30 }}
           transition={{ delay: 0.1, duration: 0.5 }}
         >
-          About Learncurve
+          About FocusKami
         </motion.h1>
         <motion.p 
           className="text-lg md:text-xl text-text/70 max-w-3xl mx-auto"
@@ -62,7 +65,7 @@ export default function About() {
           animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
           transition={{ delay: 0.2, duration: 0.5 }}
         >
-          Learncurve is your personalized learning companion — helping you craft
+          FocusKami is your personalized learning companion — helping you craft
           AI-powered roadmaps, join collaborative communities, and stay motivated
           while achieving your learning goals.
         </motion.p>
@@ -138,7 +141,7 @@ export default function About() {
             <br />
             That's when we thought — what if learning could feel more like a
             shared adventure?<br />
-            Learncurve was created to give learners a sense of assurance that
+            FocusKami was created to give learners a sense of assurance that
             they're not alone, while also guiding them through clear, personalized roadmaps.
             By connecting students with peers and providing constant direction,
             we make learning both productive and enjoyable.
@@ -156,7 +159,7 @@ export default function About() {
     animate={isTeamInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
     transition={{ duration: 0.4 }}
   >
-    Meet The Developer
+    Meet The Team
   </motion.h2>
   
   <motion.p 
@@ -170,7 +173,7 @@ export default function About() {
   </motion.p>
   
   <div className="flex flex-wrap justify-center gap-8">
-    {teamMembers.map((member, idx) => (
+    {teamMembers.map((member) => (
       <motion.div
         key={member.name}
         className="w-48 p-4 bg-background rounded-xl shadow-md border border-primary/20 transition-all duration-200 hover:border-primary/40 hover:shadow-xl"
@@ -193,7 +196,7 @@ export default function About() {
         <h3 className="text-lg font-semibold text-center">{member.name}</h3>
         {member.alias && (
           <p className="text-center text-sm text-text/60 mb-2">
-            @{member.alias}
+            aka~{member.alias}
           </p>
         )}
         <p className="text-primary text-sm text-center mb-4 font-medium">

@@ -1,20 +1,21 @@
-import React from "react";
 import { NavLink } from "react-router-dom";
 
 export default function Notfound() {
   const teal = "#44cfc2";
 
+  // Every entry must be a real route in main.jsx, otherwise the link lands back here.
   const pages = [
-    { name: "Home", path: "/" },
-    { name: "Landing", path: "/landing" },
+    { name: "Home", path: "/home" },
+    { name: "Landing", path: "/" },
     { name: "About", path: "/about" },
     { name: "Contact", path: "/contact" },
     { name: "Login", path: "/login" },
     { name: "Signup", path: "/signup" },
     { name: "Profile", path: "/profile" },
     { name: "Settings", path: "/settings" },
-    { name: "Room", path: "/room" },
-    { name: "Users", path: "/users" },
+    { name: "Join Room", path: "/joinroom" },
+    { name: "Create Room", path: "/createroom" },
+    { name: "Public Profile", path: "/user/demo" },
   ];
 
   return (

@@ -1,11 +1,14 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import { motion } from "framer-motion";
-import { useUser } from "../../contexts/UserContext";
 
 export default function Hero() {
-  const { isAuthenticated } = useUser();
-  const isLoggedIn = isAuthenticated;
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  useEffect(() => {
+    const loggedInFlag = localStorage.getItem("isLoggedIn") === "true";
+    setIsLoggedIn(loggedInFlag);
+  }, []);
 
   return (
     <motion.section

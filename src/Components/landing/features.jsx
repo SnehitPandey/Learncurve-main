@@ -1,6 +1,12 @@
 import React, { useState, useRef } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 
+// Mirrors Tailwind's `lg` breakpoint (the preview panel below is
+// `hidden lg:flex ...`). Below this width the panel does not render, so the
+// click handler MUST open the modal — between the two old values (960 and
+// 1024) the panel was hidden AND no modal opened, so the buttons did nothing.
+const LG_BREAKPOINT = 1024;
+
 export default function Features() {
     const [active, setActive] = useState(0);
     const [modalOpen, setModalOpen] = useState(false);
@@ -14,28 +20,29 @@ export default function Features() {
         {
             name: "Personalized Roadmaps",
             description: "Create tailored learning paths by setting goals, proficiency, time commitment, and preferences.",
-            img: "/images/personalized-roadmaps.png",
+            img: "/images/roadmap-preview.png",
         },
         {
             name: "Collaborative Learning Rooms",
             description: "Join rooms with like-minded learners. Share progress, chat, and stay motivated together.",
-            img: "/images/collaborate.png",
+            img: "/images/room-preview.png",
         },
         {
             name: "Track Daily Progress & Reminders",
             description: "Keep on top of daily tasks, quizzes, and smart reminders to sync with your group effectively.",
-            img: "/images/boost-progress.png",
+            img: "/images/progress-preview.png",
         },
         {
             name: "Resource Library",
             description: "Access curated guides, notes, and checklists to support your learning journey.",
-            img: "/images/resources.png",
+            img: "/images/resources-preview.png",
         },
     ];
 
     const handleSelectFeature = (index) => {
         setActive(index);
-        if (window.innerWidth < 960) {
+        // Read at click time, so no resize listener (and no cleanup) is needed.
+        if (window.innerWidth < LG_BREAKPOINT) {
             setModalOpen(true);
         }
     };
@@ -103,6 +110,8 @@ export default function Features() {
                     </div>
                 </aside>
 
+                {/* `hidden lg:flex` — this panel only exists at >= LG_BREAKPOINT (1024px),
+                    which is exactly where handleSelectFeature stops opening the modal. */}
                 <motion.main 
                     ref={previewRef}
                     className="hidden lg:flex flex-1 max-w-3xl flex-col justify-center items-center py-10 px-6"
@@ -150,7 +159,7 @@ export default function Features() {
                                 <img
                                     src={features[active].img}
                                     alt={features[active].name}
-                                    className="w-full max-h-96 object-contain rounded-xl relative z-10"
+                                    className="w-full h-96 object-cover rounded-xl relative z-10"
                                     loading="lazy"
                                 />
                             </motion.div>
@@ -213,7 +222,7 @@ export default function Features() {
                                 <img
                                     src={features[active].img}
                                     alt={features[active].name}
-                                    className="w-full max-h-64 object-contain rounded-lg"
+                                    className="w-full h-64 object-cover rounded-lg"
                                     loading="lazy"
                                 />
 

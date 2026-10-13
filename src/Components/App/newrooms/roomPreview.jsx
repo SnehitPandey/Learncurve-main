@@ -2,23 +2,16 @@
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-    X, 
-    Users, 
-    Calendar, 
-    Clock, 
-    MapPin,
-    Target,
-    Award,
-    UserPlus
-} from "lucide-react";
+    X, Users, Calendar, Clock, MapPin, Target, Award, UserPlus, Loader2 } from "lucide-react";
 
-import { Card, Button, Badge, Avatar, ProgressBar } from "../../elements/elements";
+import { Button, Badge, Avatar, ProgressBar } from "../../elements/elements";
 
 const RoomPreview = ({ 
     isOpen, 
     room, 
     onClose, 
     onJoin, 
+    joining = false,
     mode = "view" // "view" for existing rooms, "create" for new room preview
 }) => {
     if (!room || !isOpen) return null;
@@ -57,7 +50,21 @@ const RoomPreview = ({
         }
     };
 
-    const spotsLeft = room.maxMembers - room.members;
+    // Real backend fields: `maxMembers` (capacity) and `memberCount` (current).
+    // `room.maxMembers - room.members` produced NaN whenever either was missing
+    // while leaving the Join button enabled.
+    const maxMembers = Number.isFinite(Number(room.maxMembers)) ? Number(room.maxMembers) : null;
+    const memberCount = Number.isFinite(Number(room.memberCount ?? room.members))
+        ? Number(room.memberCount ?? room.members)
+        : null;
+    const hasCapacityInfo = maxMembers !== null && memberCount !== null;
+    const spotsLeft = hasCapacityInfo ? Math.max(0, maxMembers - memberCount) : null;
+    const roomIsFull = hasCapacityInfo && spotsLeft <= 0;
+
+    const roomTags = Array.isArray(room.tags) ? room.tags : [];
+    const learningGoals = Array.isArray(room.learningGoals) ? room.learningGoals : [];
+    const prerequisites = Array.isArray(room.prerequisites) ? room.prerequisites : [];
+    const memberProfiles = Array.isArray(room.memberProfiles) ? room.memberProfiles : [];
 
     return (
         <AnimatePresence>
@@ -83,7 +90,9 @@ const RoomPreview = ({
                             <Avatar name={room.avatar} size="lg" />
                             <div>
                                 <h2 className="text-2xl font-bold text-text">{room.name}</h2>
-                                <p className="text-text/70">Created by {room.creator}</p>
+                                {room.creator && (
+                                    <p className="text-text/70">Created by {room.creator}</p>
+                                )}
                             </div>
                         </div>
                         <Button
@@ -106,36 +115,46 @@ const RoomPreview = ({
                                     <div className="space-y-3">
                                         <div className="flex items-center gap-2 text-text/70">
                                             <Users size={16} />
-                                            <span>{room.members}/{room.maxMembers} members</span>
+                                            <span>{hasCapacityInfo ? `${memberCount}/${maxMembers} members` : "Member count unavailable"}</span>
                                         </div>
-                                        <div className="flex items-center gap-2 text-text/70">
-                                            <Calendar size={16} />
-                                            <span>Starts {room.startDate}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2 text-text/70">
-                                            <Clock size={16} />
-                                            <span>{room.timeframe}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2 text-text/70">
-                                            <MapPin size={16} />
-                                            <span>{room.schedule}</span>
-                                        </div>
+                                        {room.startDate && (
+                                            <div className="flex items-center gap-2 text-text/70">
+                                                <Calendar size={16} />
+                                                <span>Starts {room.startDate}</span>
+                                            </div>
+                                        )}
+                                        {room.timeframe && (
+                                            <div className="flex items-center gap-2 text-text/70">
+                                                <Clock size={16} />
+                                                <span>{room.timeframe}</span>
+                                            </div>
+                                        )}
+                                        {room.schedule && (
+                                            <div className="flex items-center gap-2 text-text/70">
+                                                <MapPin size={16} />
+                                                <span>{room.schedule}</span>
+                                            </div>
+                                        )}
                                     </div>
                                     
                                     {/* Tags */}
                                     <div className="mt-4">
                                         <div className="flex flex-wrap gap-2">
-                                            {room.tags?.map((tag) => (
+                                            {roomTags.map((tag) => (
                                                 <Badge key={tag} variant="default" size="sm">
                                                     {tag}
                                                 </Badge>
                                             ))}
-                                            <Badge variant={getPaceColor(room.pace)} size="sm">
-                                                {room.pace} pace
-                                            </Badge>
-                                            <Badge variant={getDifficultyColor(room.difficulty)} size="sm">
-                                                {room.difficulty}
-                                            </Badge>
+                                            {room.pace && (
+                                                <Badge variant={getPaceColor(room.pace)} size="sm">
+                                                    {room.pace} pace
+                                                </Badge>
+                                            )}
+                                            {room.difficulty && (
+                                                <Badge variant={getDifficultyColor(room.difficulty)} size="sm">
+                                                    {room.difficulty}
+                                                </Badge>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -145,28 +164,32 @@ const RoomPreview = ({
                                     <div className="mb-4">
                                         <div className="flex justify-between items-center mb-2">
                                             <span className="text-sm text-text/70">Course Progress</span>
-                                            <span className="text-sm font-medium text-text">{room.progress}%</span>
+                                            <span className="text-sm font-medium text-text">
+                                                {Number.isFinite(Number(room.progress)) ? `${room.progress}%` : "—"}
+                                            </span>
                                         </div>
-                                        <ProgressBar value={room.progress} variant="primary" />
+                                        <ProgressBar value={Number(room.progress) || 0} variant="primary" />
                                     </div>
                                     
-                                    <div className="bg-text/5 rounded-lg p-4">
-                                        <p className="text-text/80 text-sm leading-relaxed">
-                                            {room.description}
-                                        </p>
-                                    </div>
+                                    {room.description && (
+                                        <div className="bg-text/5 rounded-lg p-4">
+                                            <p className="text-text/80 text-sm leading-relaxed">
+                                                {room.description}
+                                            </p>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
                             {/* Learning Goals */}
-                            {room.learningGoals && (
+                            {learningGoals.length > 0 && (
                                 <div>
                                     <h3 className="text-lg font-semibold text-text mb-3 flex items-center gap-2">
                                         <Target size={18} />
                                         Learning Goals
                                     </h3>
                                     <ul className="space-y-2">
-                                        {room.learningGoals.map((goal, index) => (
+                                        {learningGoals.map((goal, index) => (
                                             <li key={index} className="flex items-start gap-2 text-text/80">
                                                 <div className="w-1.5 h-1.5 bg-primary rounded-full mt-2 flex-shrink-0"></div>
                                                 <span>{goal}</span>
@@ -177,14 +200,14 @@ const RoomPreview = ({
                             )}
 
                             {/* Prerequisites */}
-                            {room.prerequisites && (
+                            {prerequisites.length > 0 && (
                                 <div>
                                     <h3 className="text-lg font-semibold text-text mb-3 flex items-center gap-2">
                                         <Award size={18} />
                                         Prerequisites
                                     </h3>
                                     <div className="flex flex-wrap gap-2">
-                                        {room.prerequisites.map((prereq, index) => (
+                                        {prerequisites.map((prereq, index) => (
                                             <Badge key={index} variant="outline" size="sm">
                                                 {prereq}
                                             </Badge>
@@ -194,16 +217,16 @@ const RoomPreview = ({
                             )}
 
                             {/* Current Members */}
-                            {room.memberProfiles && (
+                            {memberProfiles.length > 0 && (
                                 <div>
                                     <h3 className="text-lg font-semibold text-text mb-3 flex items-center gap-2">
                                         <Users size={18} />
-                                        Current Members ({room.members})
+                                        Current Members ({memberCount ?? 0})
                                     </h3>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        {room.memberProfiles.map((member, index) => (
+                                        {memberProfiles.map((member, index) => (
                                             <div key={index} className="flex items-center gap-3 p-3 bg-text/5 rounded-lg">
-                                                <Avatar name={member.avatar} size="sm" />
+                                                <Avatar name={member.avatar || member.name} size="sm" />
                                                 <div>
                                                     <p className="font-medium text-text">{member.name}</p>
                                                     <p className="text-sm text-text/70">{member.skill}</p>
@@ -220,9 +243,13 @@ const RoomPreview = ({
                     <div className="border-t border-text/10 p-6 bg-text/5">
                         <div className="flex flex-col sm:flex-row gap-3 justify-between">
                             <div className="text-sm text-text/70">
-                                <span className="font-medium text-primary">
-                                    {spotsLeft} spot{spotsLeft !== 1 ? 's' : ''} left
-                                </span>
+                                {hasCapacityInfo ? (
+                                    <span className="font-medium text-primary">
+                                        {spotsLeft} spot{spotsLeft !== 1 ? 's' : ''} left
+                                    </span>
+                                ) : (
+                                    <span>Room capacity not published</span>
+                                )}
                                 {room.createdDate && (
                                     <>
                                         <span className="mx-2">•</span>
@@ -238,10 +265,14 @@ const RoomPreview = ({
                                     <Button
                                         onClick={() => onJoin(room)}
                                         className="flex items-center gap-2"
-                                        disabled={spotsLeft <= 0}
+                                        disabled={roomIsFull || joining}
                                     >
-                                        <UserPlus size={16} />
-                                        {spotsLeft <= 0 ? 'Room Full' : 'Join Room'}
+                                        {joining ? (
+                                            <Loader2 size={16} className="animate-spin" />
+                                        ) : (
+                                            <UserPlus size={16} />
+                                        )}
+                                        {roomIsFull ? 'Room Full' : joining ? 'Joining...' : 'Join Room'}
                                     </Button>
                                 )}
                             </div>

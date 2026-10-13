@@ -1,6 +1,6 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { motion, useInView } from "framer-motion";
-
+import { submitContactForm } from "../api/contact";
 
 export default function Contact() {
   const [formData, setFormData] = useState({
@@ -10,60 +10,47 @@ export default function Contact() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
-  const [error, setError] = useState(null);
-
+  const [errorMessage, setErrorMessage] = useState("");
 
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true, margin: "-50px" });
+  const resetTimerRef = useRef(null);
 
+  // The success panel resets itself after a few seconds. Leaving the page inside
+  // that window would otherwise run the callback against a dead component.
+  useEffect(() => () => clearTimeout(resetTimerRef.current), []);
 
   const handleChange = (e) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value
     });
+    if (errorMessage) setErrorMessage("");
   };
 
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setErrorMessage("");
 
-const handleSubmit = async (e) => {
-  e.preventDefault();
-  setIsSubmitting(true);
-  setError(null);
-  
-  try {
-    const response = await fetch(`https://formspree.io/f/${import.meta.env.VITE_FORMSPREE_ID}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(formData)
-    });
-    
-    if (response.ok) {
-      setIsSubmitting(false);
+    try {
+      await submitContactForm(formData);
       setIsSubmitted(true);
-      
-      setTimeout(() => {
+      resetTimerRef.current = setTimeout(() => {
         setIsSubmitted(false);
         setFormData({ name: '', email: '', message: '' });
-      }, 3000);
-    } else {
-      throw new Error('Form submission failed');
+      }, 3500);
+    } catch (err) {
+      setErrorMessage(err.message || "Failed to send message");
+    } finally {
+      setIsSubmitting(false);
     }
-  } catch (err) {
-    console.error('Error:', err);
-    setError('Something went wrong. Please try again.');
-    setIsSubmitting(false);
-  }
-};
-
-
+  };
 
   const contactMethods = [
     {
       title: "Email",
-      value: "hello@Learncurve.com",
+      value: "hello@focuskami.com",
       icon: "✉️",
       description: "Send us an email anytime"
     },
@@ -71,7 +58,7 @@ const handleSubmit = async (e) => {
       title: "Response Time",
       value: "24-48 hours",
       icon: "⏱️",
-      description: "We'll get back to you soon in a year"
+      description: "We'll get back to you soon"
     },
     {
       title: "Support",
@@ -80,7 +67,6 @@ const handleSubmit = async (e) => {
       description: "Join our learning community"
     }
   ];
-
 
   return (
     <div className="my-10 text-text px-6 py-16 transition-colors duration-300">
@@ -107,11 +93,10 @@ const handleSubmit = async (e) => {
             animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
             transition={{ duration: 0.3 }}
           >
-            Have questions about Learncurve? Want to collaborate or provide feedback? 
+            Have questions about FocusKami? Want to collaborate or provide feedback? 
             We'd love to hear from you!
           </motion.p>
         </motion.div>
-
 
         <div className="grid lg:grid-cols-5 gap-12 items-start">
           
@@ -140,7 +125,6 @@ const handleSubmit = async (e) => {
             ))}
           </div>
 
-
           <motion.div 
             className="lg:col-span-3 p-8 rounded-xl bg-background shadow-xl border border-primary/20"
             initial={{ opacity: 0, y: 20 }}
@@ -150,7 +134,6 @@ const handleSubmit = async (e) => {
             <h2 className="text-2xl font-bold text-primary mb-6">
               Send us a Message
             </h2>
-
 
             {isSubmitted ? (
               <motion.div
@@ -165,12 +148,11 @@ const handleSubmit = async (e) => {
               </motion.div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-6">
-                {error && (
-                  <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">
-                    {error}
+                {errorMessage && (
+                  <div className="p-3 rounded-lg bg-red-100 dark:bg-red-950/40 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 text-sm">
+                    {errorMessage}
                   </div>
                 )}
-                
                 <div className="grid md:grid-cols-2 gap-6">
                   <div>
                     <label className="block mb-2 font-medium text-text">Name *</label>
@@ -186,7 +168,6 @@ const handleSubmit = async (e) => {
                       required
                     />
                   </div>
-
 
                   <div>
                     <label className="block mb-2 font-medium text-text">Email *</label>
@@ -204,7 +185,6 @@ const handleSubmit = async (e) => {
                   </div>
                 </div>
 
-
                 <div>
                   <label className="block mb-2 font-medium text-text">Message *</label>
                   <textarea
@@ -219,7 +199,6 @@ const handleSubmit = async (e) => {
                     required
                   ></textarea>
                 </div>
-
 
                 <motion.button
                   type="submit"

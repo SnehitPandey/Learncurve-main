@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 
 export default function FAQ() {
@@ -7,11 +7,11 @@ export default function FAQ() {
   const isInView = useInView(ref, { once: true, margin: "-100px" });
 
   const faqs = [
-    { q: "What is Learncurve?", a: "Learncurve helps you create personalized learning roadmaps and join collaborative rooms to learn with others." },
+    { q: "What is LearnCurve?", a: "LearnCurve helps you create personalized learning roadmaps and join collaborative rooms to learn with others." },
     { q: "Is it free to use?", a: "Yes! We offer a free plan with core features. Premium features will be available soon." },
     { q: "Can I create my own rooms?", a: "Yes, you can create public or private rooms and invite others with similar interests." },
-    { q: "What makes Learncurve different?", a: "We combine AI-curated learning maps with collaborative study rooms and progress tracking for a unique group learning experience." },
-    { q: "Do I need to install anything?", a: "No installation is required — Learncurve works directly in your browser, and is also optimised for mobile use." },
+    { q: "What makes LearnCurve different?", a: "We combine AI-curated learning maps with collaborative study rooms and progress tracking for a unique group learning experience." },
+    { q: "Do I need to install anything?", a: "No installation is required — LearnCurve works directly in your browser, and is also optimised for mobile use." },
   ];
 
   const containerVariants = {
@@ -104,20 +104,38 @@ export default function FAQ() {
     }
   };
 
+  // framer-motion writes `backgroundColor` and `borderColor` as INLINE styles,
+  // which beat any Tailwind utility on the same element. The card therefore used
+  // to paint fully opaque at rest and silently ignore its own `bg-background/40`,
+  // and its `border-text/30` was dead for the same reason. The motion variants
+  // are the single source of truth for both here and the Tailwind utilities are
+  // gone: `rest` keeps the intended translucency, `hover` still tints toward the
+  // primary colour and brightens the border.
   const hoverVariants = {
     rest: {
       borderColor: "rgba(var(--color-primary-rgb), 0.2)",
-      backgroundColor: "rgba(var(--color-background-rgb), 1)",
+      backgroundColor: "rgba(var(--color-background-rgb), 0.4)",
       scale: 1,
       transition: { duration: 0.2 }
     },
     hover: {
       borderColor: "rgba(var(--color-primary-rgb), 0.4)",
-      backgroundColor: "rgba(var(--color-primary-rgb), 0.05)",
+      backgroundColor: "rgba(var(--color-primary-rgb), 0.08)",
       scale: 1.01,
       transition: { duration: 0.2 }
+    },
+    // `whileTap="tap"` resolves against this map, so the label must exist here.
+    tap: {
+      scale: 0.98,
+      transition: { duration: 0.1 }
     }
   };
+
+  // The card is driven by TWO vocabularies: the container's `hidden`/`visible`
+  // reveal and its own `rest`/`hover`/`tap` interaction. framer-motion resolves
+  // every one of those labels against the single `variants` map, so both sets
+  // have to live together.
+  const cardVariants = { ...faqItemVariants, ...hoverVariants };
 
   return (
     <motion.div
@@ -138,12 +156,12 @@ export default function FAQ() {
         {faqs.map((faq, idx) => (
           <motion.div
             key={idx}
-            className="rounded-lg border border-text/30 p-5 cursor-pointer overflow-hidden bg-background/40"
-            variants={faqItemVariants}
+            className="rounded-lg border p-5 cursor-pointer overflow-hidden"
+            variants={cardVariants}
             initial="rest"
             whileHover="hover"
             whileTap="tap"
-            animate={hoverVariants}
+            animate="rest"
             onClick={() => setActiveFAQ(activeFAQ === idx ? null : idx)}
             layout
           >

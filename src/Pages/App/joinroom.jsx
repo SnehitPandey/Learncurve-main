@@ -3,49 +3,21 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { 
-    Search, 
-    Filter, 
-    Users, 
-    Calendar, 
-    Clock, 
-    BookOpen,
-    Settings,
-    Plus,
-    Eye,
-    MapPin,
-    Target,
-    TrendingUp,
-    User,
-    X,
-    UserPlus,
-    MessageCircle,
-    Star,
-    Award,
-    ArrowLeft,
-    CheckCircle,
-    Sparkles
-} from "lucide-react";
+    Search, Filter, Users, Calendar, Clock, Settings, Plus, Eye, MapPin, Target } from "lucide-react";
 
 // Import components
 import { Card, Button, Badge, Avatar, ProgressBar } from "../../Components/elements/elements";
 import RoomPreview from "../../Components/App/newrooms/roomPreview";
-import { roomService } from "../../services/roomService";
+import { listRooms, joinRoom as joinRoomApi } from "../../api/rooms";
 
 const JoinRoom = () => {
     const navigate = useNavigate();
     
     // State management
     const [searchQuery, setSearchQuery] = useState("");
-    const [roomCode, setRoomCode] = useState("");
     const [showFilters, setShowFilters] = useState(false);
     const [selectedRoom, setSelectedRoom] = useState(null);
     const [showPreviewModal, setShowPreviewModal] = useState(false);
-    const [isJoining, setIsJoining] = useState(false);
-    const [error, setError] = useState("");
-    
-    // Room limit state
-    const [roomLimit, setRoomLimit] = useState(null);
-    const [isCheckingLimit, setIsCheckingLimit] = useState(true);
     const [filters, setFilters] = useState({
         skill: "",
         size: "",
@@ -53,71 +25,100 @@ const JoinRoom = () => {
         timeframe: ""
     });
 
-    // Public rooms data
+    // Rooms load from backend only — no sample data
     const [rooms, setRooms] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const [roomsLoading, setRoomsLoading] = useState(true);
+    // (sample rooms removed - backend only)
+
     const [filteredRooms, setFilteredRooms] = useState(rooms);
+    const [joiningRoomId, setJoiningRoomId] = useState(null);
+    const [joinError, setJoinError] = useState("");
 
-    // Check room limit on mount
+    // Load rooms from backend API
     useEffect(() => {
-        const checkLimit = async () => {
+        let isMounted = true;
+        const fetchBackendRooms = async () => {
             try {
-                const response = await roomService.checkRoomLimit();
-                
-                console.log('🔍 [Join Room] Room limit check response:', response);
-                
-                if (response.success) {
-                    setRoomLimit(response.data);
-                    console.log('📊 [Join Room] Room limit data:', response.data);
-                    console.log('🚫 [Join Room] Can create?', response.data.canCreate);
+                const res = await listRooms({
+                    query: searchQuery,
+                    skill: filters.skill,
+                    pace: filters.pace
+                });
+                if (res && Array.isArray(res.rooms) && isMounted) {
+                    // Backend listRooms returns {id,name,skill,pace,difficulty,maxMembers,
+                    // memberCount,schedule,timeframe,tags,description}. It does NOT
+                    // return created_at / creator_name / max_members.
+                    const formatted = res.rooms.map(r => ({
+                        id: r.id,
+                        name: r.name || "Untitled Room",
+                        skill: r.skill || "General",
+                        pace: r.pace || "Moderate",
+                        members: r.memberCount ?? 0,
+                        maxMembers: r.maxMembers ?? 0,
+                        startDate: null,
+                        timeframe: r.timeframe || "Not set",
+                        description: r.description || "",
+                        tags: Array.isArray(r.tags) ? r.tags : [r.skill].filter(Boolean),
+                        schedule: r.schedule || "",
+                        progress: 0,
+                        difficulty: r.difficulty || "Not set",
+                        avatar: ((r.skill || r.name || "RM")).slice(0, 2).toUpperCase(),
+                        isActive: true,
+                        creator: null,
+                        createdDate: null,
+                        learningGoals: [],
+                        prerequisites: [],
+                        memberProfiles: []
+                    }));
+                    if (formatted.length > 0 && isMounted) {
+                        setRooms(formatted);
+                    }
                 }
+
+                // Always clear the spinner, whatever came back.
+                //
+                // This used to sit inside `if (formatted.length > 0)`, so a search
+                // that legitimately matched NOTHING left `roomsLoading` true
+                // forever — the page spun indefinitely and showed neither an empty
+                // state nor an error. An empty result is a result, not a pending
+                // request.
+                if (isMounted) setRoomsLoading(false);
             } catch (err) {
-                console.error('❌ [Join Room] Failed to check room limit:', err);
-            } finally {
-                setIsCheckingLimit(false);
+                console.warn("Could not fetch backend rooms:", err);
+                if (isMounted) setRoomsLoading(false);
             }
         };
 
-        checkLimit();
-    }, []);
+        const timer = setTimeout(() => {
+            fetchBackendRooms();
+        }, 300);
 
-    // Fetch public rooms on mount
-    useEffect(() => {
-        const fetchPublicRooms = async () => {
-            try {
-                setLoading(true);
-                const response = await roomService.getPublicRooms();
-
-                const rooms = response?.rooms || response?.data || [];
-                if (response?.success && Array.isArray(rooms)) {
-                    setRooms(rooms);
-                    setFilteredRooms(rooms);
-                }
-            } catch (err) {
-                console.error('Error fetching public rooms:', err);
-                setError('Failed to load rooms. Please try again.');
-            } finally {
-                setLoading(false);
-            }
+        return () => {
+            isMounted = false;
+            clearTimeout(timer);
         };
+    }, [searchQuery, filters.skill, filters.pace]);
 
-        fetchPublicRooms();
-    }, []);
-
-    // Filter and search logic
+    // Filter and search logic (null-safe — backend rooms may omit skill/tags)
     useEffect(() => {
         let filtered = rooms.filter(room => {
-            const matchesSearch = room.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                                (room.description && room.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
-                                room.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
+            const q = (searchQuery || "").toLowerCase();
+            const name = (room.name || "").toLowerCase();
+            const skill = (room.skill || "").toLowerCase();
+            const tags = Array.isArray(room.tags) ? room.tags : [];
+            const matchesSearch = !q || name.includes(q) ||
+                                skill.includes(q) ||
+                                tags.some(tag => String(tag).toLowerCase().includes(q));
             
-            const matchesSkill = !filters.skill || room.tags.some(tag => tag.toLowerCase().includes(filters.skill.toLowerCase()));
+            const matchesSkill = !filters.skill || room.skill.toLowerCase().includes(filters.skill.toLowerCase());
             const matchesSize = !filters.size || 
-                (filters.size === "small" && room.maxSeats <= 4) ||
-                (filters.size === "medium" && room.maxSeats > 4 && room.maxSeats <= 6) ||
-                (filters.size === "large" && room.maxSeats > 6);
+                (filters.size === "small" && room.maxMembers <= 4) ||
+                (filters.size === "medium" && room.maxMembers > 4 && room.maxMembers <= 6) ||
+                (filters.size === "large" && room.maxMembers > 6);
+            const matchesPace = !filters.pace || room.pace.toLowerCase() === filters.pace.toLowerCase();
+            const matchesTimeframe = !filters.timeframe || room.timeframe.includes(filters.timeframe);
 
-            return matchesSearch && matchesSkill && matchesSize;
+            return matchesSearch && matchesSkill && matchesSize && matchesPace && matchesTimeframe;
         });
         
         setFilteredRooms(filtered);
@@ -146,47 +147,20 @@ const JoinRoom = () => {
     };
 
     const handleJoinRoom = async (room) => {
-        setIsJoining(true);
-        setError("");
-        
+        if (!room?.id) return;
+        setJoiningRoomId(room.id);
+        setJoinError("");
         try {
-            // If room has a code property, use it; otherwise use roomCode state
-            const code = room?.code || roomCode;
-            
-            if (!code || code.length !== 6) {
-                throw new Error("Please enter a valid 6-character room code");
-            }
-
-            const response = await roomService.joinRoom(code);
-            const joinedRoom = response?.room || response?.data;
-
-            if (response.success && joinedRoom) {
-                console.log("Joined room:", joinedRoom);
-                
-                // Trigger room list refresh
-                window.dispatchEvent(new CustomEvent('roomListChanged'));
-                
-                setShowPreviewModal(false);
-                navigate(`/room/${joinedRoom.id || joinedRoom._id}`);
-            } else {
-                throw new Error("Failed to join room");
-            }
+            await joinRoomApi(room.id);
+            setShowPreviewModal(false);
+            navigate(`/room/${room.id}`);
         } catch (err) {
-            console.error("Join room error:", err);
-            
-            // Check if it's a room limit error
-            if (err.response?.status === 403 || err.message?.includes('limit reached')) {
-                setError("Free plan limit reached. You can join or create a maximum of 5 rooms. Upgrade to join more rooms.");
-            } else {
-                setError(err.message || "Failed to join room. Please try again.");
-            }
+            // Don't pretend the join worked — staying here surfaces the failure.
+            console.warn("Join room failed:", err?.message);
+            setJoinError(err?.message || "Could not join this room.");
         } finally {
-            setIsJoining(false);
+            setJoiningRoomId(null);
         }
-    };
-
-    const handleJoinByCode = async () => {
-        await handleJoinRoom({ code: roomCode });
     };
 
     const handleCreateNewRoom = () => {
@@ -203,11 +177,12 @@ const JoinRoom = () => {
     };
 
     const handleEditPreferences = () => {
-        navigate('/profile', { state: { tab: 'preferences' } });
+        navigate('/settings', { state: { tab: 'preferences' } });
     };
 
+
     const getPaceColor = (pace) => {
-        switch (pace.toLowerCase()) {
+        switch (String(pace || "").toLowerCase()) {
             case "fast": return "danger";
             case "moderate": return "warning";
             case "slow": return "success";
@@ -216,97 +191,13 @@ const JoinRoom = () => {
     };
 
     const getDifficultyColor = (difficulty) => {
-        switch (difficulty.toLowerCase()) {
+        switch (String(difficulty || "").toLowerCase()) {
             case "beginner": return "success";
             case "intermediate": return "warning";
             case "advanced": return "danger";
             default: return "default";
         }
     };
-
-    // Show loading state while checking limit
-    if (isCheckingLimit) {
-        return (
-            <div className="min-h-screen md:ml-20 mb-20 md:mb-0 transition-colors duration-300 flex items-center justify-center">
-                <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-                    <p className="text-text/60">Loading...</p>
-                </div>
-            </div>
-        );
-    }
-
-    // Show limit reached UI if user has reached max rooms
-    if (roomLimit && !roomLimit.canCreate) {
-        return (
-            <div className="min-h-screen md:ml-20 mb-20 md:mb-0 transition-colors duration-300">
-                <div className="max-w-2xl mx-auto px-4 py-16">
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="bg-background rounded-2xl shadow-2xl p-8 text-center border border-text/10"
-                    >
-                        {/* Icon */}
-                        <div className="mb-6">
-                            <div className="w-20 h-20 mx-auto bg-gradient-to-br from-primary/20 to-secondary/20 rounded-full flex items-center justify-center">
-                                <Star className="w-10 h-10 text-primary" />
-                            </div>
-                        </div>
-
-                        {/* Title */}
-                        <h1 className="text-3xl font-bold text-text mb-4">Room Limit Reached</h1>
-                        
-                        {/* Message */}
-                        <p className="text-text/70 text-lg mb-2">
-                            You've reached the maximum of <span className="font-bold text-primary">{roomLimit.maxRooms} rooms</span> on the free plan.
-                        </p>
-                        <p className="text-text/60 mb-8">
-                            Currently in {roomLimit.currentRooms} active room{roomLimit.currentRooms !== 1 ? 's' : ''}.
-                        </p>
-
-                        {/* Coming Soon Badge */}
-                        <div className="inline-block mb-8">
-                            <Badge variant="warning" className="text-lg px-6 py-2">
-                                <Sparkles className="w-5 h-5 mr-2 inline" />
-                                Learncurve Pro - Coming Soon
-                            </Badge>
-                        </div>
-
-                        {/* Features Preview */}
-                        <div className="bg-background/50 rounded-xl p-6 mb-8 border border-text/5">
-                            <h3 className="font-semibold text-text mb-4">Learncurve Pro will include:</h3>
-                            <ul className="text-left space-y-3 text-text/70">
-                                <li className="flex items-start">
-                                    <CheckCircle className="w-5 h-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                                    <span>Unlimited room creation and joining</span>
-                                </li>
-                                <li className="flex items-start">
-                                    <CheckCircle className="w-5 h-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                                    <span>Advanced AI-powered learning insights</span>
-                                </li>
-                                <li className="flex items-start">
-                                    <CheckCircle className="w-5 h-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
-                                    <span>Priority support and exclusive features</span>
-                                </li>
-                            </ul>
-                        </div>
-
-                        {/* Actions */}
-                        <div className="flex justify-center">
-                            <Button
-                                variant="outline"
-                                onClick={() => navigate('/home')}
-                                className="flex items-center gap-2"
-                            >
-                                <ArrowLeft className="w-4 h-4" />
-                                Back to Home
-                            </Button>
-                        </div>
-                    </motion.div>
-                </div>
-            </div>
-        );
-    }
 
     return (
         <div className="min-h-screen md:ml-20 mb-20 md:mb-0 transition-colors duration-300">
@@ -325,6 +216,12 @@ const JoinRoom = () => {
                     </p>
                 </div>
             </motion.div>
+
+            {joinError && (
+                <div className="mx-4 mt-4 max-w-6xl md:mx-auto rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-500">
+                    {joinError}
+                </div>
+            )}
 
             <motion.div
                 variants={containerVariants}
@@ -445,132 +342,124 @@ const JoinRoom = () => {
 
                 {/* Room Cards */}
                 <div className="space-y-4">
-                    {loading ? (
-                        <motion.div variants={itemVariants}>
-                            <Card className="text-center py-12">
-                                <div className="flex flex-col items-center justify-center">
-                                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mb-4"></div>
-                                    <p className="text-text/70">Loading available rooms...</p>
-                                </div>
-                            </Card>
-                        </motion.div>
-                    ) : (
-                        <AnimatePresence>
-                            {filteredRooms.length > 0 ? (
-                                filteredRooms.map((room) => (
-                                    <motion.div
-                                        key={room.id}
-                                        variants={itemVariants}
-                                        initial="hidden"
-                                        animate="visible"
-                                        exit="hidden"
-                                        layout
-                                    >
-                                        <Card className="hover:border-primary/50 transition-colors">
-                                            <div className="flex flex-col lg:flex-row gap-6">
-                                                {/* Room Info */}
-                                                <div className="flex-1">
-                                                    <div className="flex items-start justify-between mb-3">
-                                                        <div className="flex-1">
-                                                            <h3 className="text-xl font-bold text-text mb-2">
-                                                                {room.title}
-                                                            </h3>
-                                                            {room.description && (
-                                                                <p className="text-text/70 text-sm">
-                                                                    {room.description}
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                        <div className="flex items-center gap-2 ml-4">
-                                                            {room.host?.avatarUrl ? (
-                                                                <img 
-                                                                    src={room.host.avatarUrl} 
-                                                                    alt={room.host?.name || 'Host'}
-                                                                    className="w-10 h-10 rounded-full object-cover"
-                                                                />
-                                                            ) : (
-                                                                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-primary font-semibold">
-                                                                    {(room.host?.name || 'U').charAt(0).toUpperCase()}
-                                                                </div>
-                                                            )}
-                                                            <div className="text-sm">
-                                                                <p className="text-text/60">Host</p>
-                                                                <p className="text-text font-medium">{room.host?.name || 'Unknown'}</p>
-                                                            </div>
-                                                        </div>
+                    <AnimatePresence>
+                        {roomsLoading ? (
+                            <motion.div variants={itemVariants}>
+                                <Card className="text-center py-12">
+                                    <p className="text-text/70">Loading rooms…</p>
+                                </Card>
+                            </motion.div>
+                        ) : filteredRooms.length > 0 ? (
+                            filteredRooms.map((room) => (
+                                <motion.div
+                                    key={room.id}
+                                    variants={itemVariants}
+                                    initial="hidden"
+                                    animate="visible"
+                                    exit="hidden"
+                                    layout
+                                >
+                                    <Card className="hover:border-primary/50 transition-colors cursor-pointer">
+                                        <div className="flex flex-col lg:flex-row gap-6">
+                                            {/* Room Info */}
+                                            <div className="flex-1">
+                                                <div className="flex items-start justify-between mb-3">
+                                                    <div>
+                                                        <h3 className="text-xl font-bold text-text mb-2">
+                                                            {room.name}
+                                                        </h3>
+                                                        <p className="text-text/70 text-sm">
+                                                            {room.description}
+                                                        </p>
                                                     </div>
+                                                    <Avatar name={room.avatar} size="md" />
+                                                </div>
 
-                                                    {/* Tags */}
-                                                    <div className="flex flex-wrap gap-2 mb-4">
-                                                        {room.tags.map((tag, index) => (
-                                                            <Badge key={index} variant="default" size="sm">
-                                                                {tag}
-                                                            </Badge>
-                                                        ))}
-                                                        <Badge variant={room.status === 'PREPARING' ? 'warning' : 'success'} size="sm">
-                                                            {room.status}
+                                                {/* Tags */}
+                                                <div className="flex flex-wrap gap-2 mb-4">
+                                                    {room.tags.map((tag) => (
+                                                        <Badge key={tag} variant="default" size="sm">
+                                                            {tag}
                                                         </Badge>
-                                                    </div>
+                                                    ))}
+                                                    <Badge variant={getPaceColor(room.pace)} size="sm">
+                                                        {room.pace} pace
+                                                    </Badge>
+                                                    <Badge variant={getDifficultyColor(room.difficulty)} size="sm">
+                                                        {room.difficulty}
+                                                    </Badge>
+                                                </div>
 
-                                                    {/* Room Stats */}
-                                                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-                                                        <div className="flex items-center gap-2 text-text/70">
-                                                            <Users size={16} />
-                                                            <span>{room.currentMembers}/{room.maxSeats} members</span>
-                                                        </div>
-                                                        <div className="flex items-center gap-2 text-text/70">
-                                                            <Calendar size={16} />
-                                                            <span>Starts {new Date(room.startDate).toLocaleDateString()}</span>
-                                                        </div>
-                                                        <div className="flex items-center gap-2 text-text/70">
-                                                            <BookOpen size={16} />
-                                                            <span>{room.availableSeats} spots left</span>
-                                                        </div>
+                                                {/* Room Stats */}
+                                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                                    <div className="flex items-center gap-2 text-text/70">
+                                                        <Users size={16} />
+                                                        <span>{room.members}/{room.maxMembers} members</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-text/70">
+                                                        <Calendar size={16} />
+                                                        <span>Starts {room.startDate}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-text/70">
+                                                        <Clock size={16} />
+                                                        <span>{room.timeframe}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-text/70">
+                                                        <MapPin size={16} />
+                                                        <span>{room.schedule}</span>
                                                     </div>
                                                 </div>
 
-                                                {/* Action Button */}
-                                                <div className="flex flex-col justify-center gap-3 lg:w-48">
-                                                    <Button
-                                                        onClick={() => handleJoinRoom(room)}
-                                                        disabled={isJoining}
-                                                        className="flex items-center gap-2 w-full justify-center"
-                                                    >
-                                                        <UserPlus size={16} />
-                                                        {isJoining ? 'Joining...' : 'Join Room'}
-                                                    </Button>
-                                                    <div className="text-center">
-                                                        <span className="text-xs text-text/60">
-                                                            Code: {room.code}
-                                                        </span>
+                                                {/* Progress */}
+                                                <div className="mt-4">
+                                                    <div className="flex justify-between items-center mb-2">
+                                                        <span className="text-sm text-text/70">Progress</span>
+                                                        <span className="text-sm font-medium text-text">{room.progress}% Started</span>
                                                     </div>
+                                                    <ProgressBar value={room.progress} variant="primary" />
                                                 </div>
                                             </div>
-                                        </Card>
-                                    </motion.div>
-                                ))
-                            ) : (
-                                <motion.div variants={itemVariants}>
-                                    <Card className="text-center py-12">
-                                        <Target className="mx-auto text-text/30 mb-4" size={48} />
-                                        <h3 className="text-xl font-bold text-text mb-2">No rooms found</h3>
-                                        <p className="text-text/70 mb-6">
-                                            No rooms match your current filters. Try adjusting your search or create a new room.
-                                        </p>
-                                        <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                                            <Button variant="outline" onClick={clearFilters}>
-                                                Clear filters
-                                            </Button>
-                                            <Button onClick={handleCreateNewRoom}>
-                                                <Plus size={16} className="mr-2" />
-                                                Request to Form New Room
-                                            </Button>
+
+                                            {/* Action Button */}
+                                            <div className="flex flex-col justify-center gap-3">
+                                                <Button
+                                                    onClick={() => handleRoomPreview(room)}
+                                                    className="flex items-center gap-2"
+                                                >
+                                                    <Eye size={16} />
+                                                    Preview Room
+                                                </Button>
+                                                <div className="text-center">
+                                                    <span className="text-xs text-text/60">
+                                                        {room.maxMembers - room.members} spots left
+                                                    </span>
+                                                </div>
+                                            </div>
                                         </div>
                                     </Card>
                                 </motion.div>
-                            )}
-                        </AnimatePresence>
-                    )}
+                            ))
+                        ) : (
+                            <motion.div variants={itemVariants}>
+                                <Card className="text-center py-12">
+                                    <Target className="mx-auto text-text/30 mb-4" size={48} />
+                                    <h3 className="text-xl font-bold text-text mb-2">No rooms found</h3>
+                                    <p className="text-text/70 mb-6">
+                                        No rooms match your current filters. Try adjusting your search or create a new room.
+                                    </p>
+                                    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                                        <Button variant="outline" onClick={clearFilters}>
+                                            Clear filters
+                                        </Button>
+                                        <Button onClick={handleCreateNewRoom}>
+                                            <Plus size={16} className="mr-2" />
+                                            Request to Form New Room
+                                        </Button>
+                                    </div>
+                                </Card>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
                 </div>
             </motion.div>
 
@@ -580,8 +469,14 @@ const JoinRoom = () => {
                 room={selectedRoom}
                 onClose={() => setShowPreviewModal(false)}
                 onJoin={handleJoinRoom}
+                joining={joiningRoomId === selectedRoom?.id}
                 mode="view"
             />
+            {joinError && (
+                <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-500">
+                    {joinError}
+                </div>
+            )}
         </div>
     );
 };

@@ -1,928 +1,290 @@
 // Components/room/roomContent.jsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-	TrendingUp,
-	Clock,
-	Target,
-	Plus,
-	MoreHorizontal,
-	Users,
-	Crown,
-	Circle,
-	CheckCircle,
-	PlayCircle,
-	Brain,
-	Trophy,
-	Timer,
-	BookOpen,
-	Award,
-	Calendar,
-	ArrowRight,
-	Zap,
-	Star,
-	Kanban,
-	Loader,
-	CheckCircle2,
-	XCircle,
-	Lock,
-} from "lucide-react";
-import { Card, Button, Badge, ProgressBar } from "../../elements/elements";
-import { TaskSkeleton, CardSkeleton, MilestoneSkeleton, QuizSkeleton } from "../../elements/Skeleton";
+	TrendingUp, Clock, Target, Users, Crown, Circle, CheckCircle, PlayCircle, Brain, Trophy, BookOpen, Award, Calendar, ArrowRight, Zap, Loader2, ClipboardCheck, ChevronDown, RotateCcw, Wand2 } from "lucide-react";
+import { Card, Button, Badge } from "../../elements/elements";
 import KanbanView from "./kanbanView";
-import MilestoneDetailModal from "./milestoneDetailModal";
-import TaskTimerModal from "./taskTimerModal";
-import StudyLayout from "./study/StudyLayout";
-import MinimizedTimer from "./minimizedTimer";
-import CompletionPromptModal from "./CompletionPromptModal";
-import PresenceIndicator from "../presence/PresenceIndicator";
-import { roomService } from "../../../services/roomService";
-import { useRoomSync } from "../../../hooks/useRoomSync";
-import { useFocusTimer } from "../../../hooks/useFocusTimer";
+import ReplanModal from "./replanModal";
+import { getRoomQuizzes, submitQuizAnswers, createTestForToday, getPastResults } from "../../../api/quizzes";
+import AchievementIcon from "../../elements/AchievementIcon";
 
 const RoomContent = ({
 	activeView,
 	roomData,
 	members,
-	onlineMembers = [],
 	todaysTasks,
 	roadmapItems,
 	showMembers = true,
-	onTaskComplete,
-	onTopicComplete,
-	onContinueToNextDay,
-	onViewChange, // Add this prop to change views
-	onRefetchRoom, // NEW: Function to refetch room data
-	// Discord presence functions
-	getUserPresence,
-	isUserOnline,
+	onToggleTask,
+	onToggleRoadmapTask,
+	onOpenQuiz,
+	loading = false,
+	roadmapGeneratedBy = "template",
+	scheduleState = {},
+	onReplanRoadmap,
 }) => {
-	// Quiz state
+	const [showReplanModal, setShowReplanModal] = useState(false);
+	// Quiz state — loaded from backend
+	const [quizzes, setQuizzes] = useState([]);
 	const [currentQuiz, setCurrentQuiz] = useState(null);
 	const [selectedAnswers, setSelectedAnswers] = useState({});
-	const [availableQuizzes, setAvailableQuizzes] = useState([]); // List of available quizzes
-	const [quizResults, setQuizResults] = useState(null);
-	const [quizLoading, setQuizLoading] = useState(false);
-	const [generatingQuiz, setGeneratingQuiz] = useState(false);
-	const [quizzesRemaining, setQuizzesRemaining] = useState(2); // Track remaining quizzes for today
-	
-	// Progress state
-	const [fetchedTodaysTasks, setFetchedTodaysTasks] = useState([]);
-	const [userProgress, setUserProgress] = useState(null);
-	const [progressLoading, setProgressLoading] = useState(false);
-	const [additionalTopics, setAdditionalTopics] = useState([]);
-	
-	// Track if we've shown completion prompt for current task set (prevents loop)
-	const completionPromptShownRef = useRef(false);
-	
-	// Use fetched tasks if available, otherwise fall back to prop
-	const displayTodaysTasks = fetchedTodaysTasks.length > 0 ? fetchedTodaysTasks : (todaysTasks || []);
-	
-	// Get current user from localStorage
-	const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-	const currentUserId = currentUser?.id || currentUser?._id;
-	
-	// Focus Timer Hook with persistence
-	const {
-		timerState,
-		startSession,
-		stopSession,
-		pauseSession,
-		resumeSession,
-		updateProgress,
-		setTimerState
-	} = useFocusTimer(roomData?.id, currentUserId);
-	
-	// Modal states
-	const [selectedMilestone, setSelectedMilestone] = useState(null);
-	const [showMilestoneModal, setShowMilestoneModal] = useState(false);
-	const [selectedTask, setSelectedTask] = useState(null);
-	const [showTimerModal, setShowTimerModal] = useState(false);
-	
-	// Study session states
-	const [showStudyPanel, setShowStudyPanel] = useState(false);
-	const [showMinimizedTimer, setShowMinimizedTimer] = useState(false);
-	const [showCompletionPrompt, setShowCompletionPrompt] = useState(false);
-	const [allTasksCompleted, setAllTasksCompleted] = useState(false);
-	const [expandedMilestoneId, setExpandedMilestoneId] = useState(null);
+	const [quizResult, setQuizResult] = useState(null);
+	const [quizError, setQuizError] = useState("");
+	const [quizSubmitting, setQuizSubmitting] = useState(false);
+	const [creatingTest, setCreatingTest] = useState(false);
+	const [pastResults, setPastResults] = useState([]);
+	// Retention window for the results list, reported by the backend.
+	const [resultsWindowDays, setResultsWindowDays] = useState(15);
 
-	// Task/Milestone handlers
-	const handleStartTask = async (taskId) => {
-		console.log('Starting task:', taskId);
-		const task = displayTodaysTasks.find(t => t.id === taskId);
-		if (task) {
-			const milestone = roadmapItems.find(m => m.id === task.milestoneId);
-			setSelectedTask(task);
-			setSelectedMilestone(milestone);
-			
-			// Switch to roadmap view instead of opening timer modal
-			if (onViewChange) {
-				onViewChange('roadmap');
-			}
-		}
-	};
+	// Load the learner's own created tests AND their 15-day results when the quiz
+	// tab is opened. Both are read-only reads — creating a test is an explicit
+	// action, never a side effect of opening the tab.
+	useEffect(() => {
+		if (activeView !== "quiz" || !roomData?.id) return undefined;
+		let cancelled = false;
+		getRoomQuizzes(roomData.id)
+			.then(res => {
+				if (cancelled) return;
+				setQuizzes(Array.isArray(res?.quizzes) ? res.quizzes : []);
+			})
+			.catch(() => {
+				if (!cancelled) setQuizzes([]);
+			});
 
-	// Handle timer minimization - opens study panel
-	const handleMinimizeTimer = () => {
-		setShowTimerModal(false);
-		setShowMinimizedTimer(true);
-		setShowStudyPanel(true);
-	};
+		getPastResults(roomData.id)
+			.then(res => {
+				if (cancelled) return;
+				setPastResults(res.results);
+				// The retention window is a backend policy (`RESULTS_WINDOW_DAYS`).
+				// Taking it from the response rather than repeating "15" here means
+				// changing the policy updates every place that reports it.
+				setResultsWindowDays(res.windowDays);
+			})
+			.catch(() => {
+				if (!cancelled) setPastResults([]);
+			});
 
-	// Handle timer expand - returns to full timer
-	const handleExpandTimer = () => {
-		setShowMinimizedTimer(false);
-		setShowTimerModal(true);
-		setShowStudyPanel(false);
-	};
+		return () => { cancelled = true; };
+	}, [activeView, roomData?.id]);
 
-	// Handle timer stop/resume toggle from minimized view
-	const handleStopMinimizedTimer = async () => {
-		if (timerState.isRunning) {
-			await pauseSession();
-		} else {
-			await resumeSession();
-		}
-		// Keep the minimized timer visible
-	};
-
-	// Handle timer complete from minimized view
-	const handleCompleteMinimizedTimer = async () => {
-		const taskData = {
-			taskId: timerState.task?.id,
-			timeSpent: Math.floor(timerState.elapsedSeconds / 60) + ' minutes',
-			elapsedSeconds: timerState.elapsedSeconds,
-			// Mark this as a milestone-based task (not from todaysTasks)
-			isMilestoneTask: true,
-		};
-		
-		await handleTaskComplete(taskData);
-		// Stop the session and hide timer after completion
-		await stopSession();
-		setShowMinimizedTimer(false);
-		setShowStudyPanel(false);
-	};
-
-	// Handle subtopic completion in study panel
-	const handleSubtopicComplete = async (data) => {
-		console.log('Subtopic completed:', data);
-		// Refetch progress data to update UI
-		await refetchProgressData();
-	};
-	
-	// Wrap parent's onTopicComplete to refetch data
-	const handleTopicCompleteWrapper = async (data) => {
-		console.log('✅ Topic completed wrapper called:', data);
-		
-		// ✨ IMMEDIATELY update local task state for instant UI feedback
-		if (data && data.topicTitle) {
-			setFetchedTodaysTasks(prev => 
-				prev.map(task => 
-					task.title === data.topicTitle 
-						? { ...task, completed: true, status: 'completed' }
-						: task
-				)
-			);
-			console.log('✅ Local task state updated for:', data.topicTitle);
-		}
-		
-		// Refetch room data to get updated completion status
-		if (onRefetchRoom) {
-			console.log('🔄 Refetching room data to update UI...');
-			await onRefetchRoom();
-		}
-		
-		// Refetch progress data (in background, don't block UI)
-		refetchProgressData().catch(err => {
-			console.warn('⚠️ Background refetch failed (non-critical):', err.message);
-		});
-		
-		// Update local state immediately for UI responsiveness
-		if (data && data.topicId && data.milestone) {
-			// Force a state update to trigger re-render
-			setSelectedMilestone({...data.milestone});
-		}
-		
-		// Call parent callback if provided
-		if (onTopicComplete) {
-			console.log('🔄 Calling parent onTopicComplete...');
-			await onTopicComplete(data);
-		}
-		
-		// ✨ Dispatch custom event so dashboard todaysTaskBlock auto-refetches
-		window.dispatchEvent(new CustomEvent('task-completed', { 
-			detail: { topicTitle: data?.topicTitle, roomId: roomData?.id }
-		}));
-		
-		console.log('✅ Topic completion handler finished');
-	};
-
-	// Handle study panel close
-	const handleCloseStudyPanel = async () => {
-		setShowStudyPanel(false);
-		if (showMinimizedTimer) {
-			// Keep timer running in minimized state
-			return;
-		}
-		// If no minimized timer, clean up session
-		await stopSession();
-	};
-
-	// ========== PROGRESS TAB BACKEND INTEGRATION ==========
-	
-	// Function to refetch progress data
-	const refetchProgressData = async () => {
-		if (!roomData?.id || !currentUserId) return;
-		
+	/** Ask the backend for a test covering today's topic. */
+	const handleCreateTest = async () => {
+		if (!roomData?.id || creatingTest) return;
+		setCreatingTest(true);
+		setQuizError("");
 		try {
-			console.log('🔄 Refetching progress data for room:', roomData.id, 'user:', currentUser.id);
-			setProgressLoading(true);
-			
-			// Fetch today's tasks
-			const tasksResponse = await roomService.getTodaysTasks();
-			console.log('📋 Today\'s tasks response:', tasksResponse);
-			if (tasksResponse && tasksResponse.tasks) {
-				const roomTasks = tasksResponse.tasks.filter(task => task.roomId === roomData.id);
-				console.log('✅ Filtered tasks for this room:', roomTasks);
-				setFetchedTodaysTasks(roomTasks);
-			}
-			
-			// Fetch user progress
-			const progressResponse = await roomService.getUserProgress(roomData.id, currentUserId);
-			console.log('📊 User progress response:', progressResponse);
-			if (progressResponse.progress) {
-				setUserProgress(progressResponse.progress);
-				
-				// ✨ FRESH: Calculate additional topics = completed topics NOT in today's schedule
-				if (roomData.roadmap && roomData.roadmap.phases) {
-					// Normalize title by removing backticks and extra spaces
-					const normalizeTitle = (title) => {
-						if (!title) return '';
-						return title.replace(/`/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-					};
-					
-					const todayTaskTitles = displayTodaysTasks.map(t => normalizeTitle(t.title));
-					const additionalTopicsList = [];
-					
-					roomData.roadmap.phases.forEach(phase => {
-						phase.milestones.forEach(milestone => {
-							if (milestone.topics && Array.isArray(milestone.topics)) {
-								milestone.topics.forEach(topic => {
-									const topicTitle = typeof topic === 'string' ? topic : topic.title;
-									const topicStatus = typeof topic === 'object' ? topic.status : 'pending';
-									const isCompleted = topicStatus === 'completed' || topic.completed;
-									const normalizedTopicTitle = normalizeTitle(topicTitle);
-									const isScheduled = todayTaskTitles.includes(normalizedTopicTitle);
-									
-									if (isCompleted && !isScheduled) {
-										additionalTopicsList.push({
-											title: topicTitle,
-											milestone: milestone.title,
-											completedAt: topic.completedAt || new Date()
-										});
-									}
-								});
-							}
-						});
-					});
-					
-					console.log('📚 Additional topics calculated:', additionalTopicsList);
-					setAdditionalTopics(additionalTopicsList);
-				}
+			const made = await createTestForToday(roomData.id);
+			if (made) {
+				setQuizzes(prev => [made, ...prev]);
+				setCurrentQuiz(made);
+				setSelectedAnswers({});
 			}
 		} catch (err) {
-			console.error('❌ Failed to fetch progress data:', err);
+			setQuizError(err?.message || "Could not create a test right now. Please try again.");
 		} finally {
-			setProgressLoading(false);
-		}
-	};
-	
-	// Fetch today's tasks and user progress when Progress tab is active
-	useEffect(() => {
-		const fetchProgressData = async () => {
-			if (!roomData?.id || !currentUser?.id || activeView !== 'progress') return;
-			
-			try {
-				setProgressLoading(true);
-				
-				// Fetch today's tasks (gets all user's rooms tasks)
-				const tasksResponse = await roomService.getTodaysTasks();
-				console.log('Today tasks response:', tasksResponse);
-				if (tasksResponse && tasksResponse.tasks) {
-					// Filter tasks for this room only
-					const roomTasks = tasksResponse.tasks.filter(task => task.roomId === roomData.id);
-					setFetchedTodaysTasks(roomTasks);
-					
-					// ✨ FRESH: Calculate additional topics = completed topics NOT in today's schedule
-					if (roomData.roadmap && roomData.roadmap.phases) {
-						// Normalize title by removing backticks and extra spaces
-						const normalizeTitle = (title) => {
-							if (!title) return '';
-							return title.replace(/`/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-						};
-						
-						const todayTaskTitles = roomTasks.map(t => normalizeTitle(t.title));
-						const additionalTopicsList = [];
-						
-						roomData.roadmap.phases.forEach(phase => {
-							phase.milestones.forEach(milestone => {
-								if (milestone.topics && Array.isArray(milestone.topics)) {
-									milestone.topics.forEach(topic => {
-										const topicTitle = typeof topic === 'string' ? topic : topic.title;
-										const topicStatus = typeof topic === 'object' ? topic.status : 'pending';
-										const isCompleted = topicStatus === 'completed' || topic.completed;
-										const normalizedTopicTitle = normalizeTitle(topicTitle);
-										const isScheduled = todayTaskTitles.includes(normalizedTopicTitle);
-										
-										console.log(`  🔍 Topic: "${topicTitle}" | Normalized: "${normalizedTopicTitle}" | Completed: ${isCompleted} | Scheduled: ${isScheduled}`);
-										
-										if (isCompleted && !isScheduled) {
-											additionalTopicsList.push({
-												title: topicTitle,
-												milestone: milestone.title,
-												completedAt: topic.completedAt || new Date()
-											});
-										}
-									});
-								}
-							});
-						});
-						
-						console.log('📚 Additional topics calculated:', additionalTopicsList);
-						console.log('📋 Today\'s task titles (normalized):', todayTaskTitles);
-						setAdditionalTopics(additionalTopicsList);
-					}
-				}
-				
-				// Fetch user progress
-				const progressResponse = await roomService.getUserProgress(roomData.id, currentUser.id);
-				if (progressResponse.progress) {
-					setUserProgress(progressResponse.progress);
-				}
-			} catch (err) {
-				console.error('Failed to fetch progress data:', err);
-			} finally {
-				setProgressLoading(false);
-			}
-		};
-
-		fetchProgressData();
-	}, [roomData?.id, currentUserId, activeView]);
-
-	// ========== TASK COMPLETION DETECTION ==========
-	// Detect when all tasks are completed and show completion prompt
-	useEffect(() => {
-		if (activeView === 'progress' && displayTodaysTasks.length > 0) {
-			const allCompleted = displayTodaysTasks.every(task => task.completed);
-			setAllTasksCompleted(allCompleted);
-			
-			// Check if already dismissed today
-			const today = new Date().toDateString();
-			const lastDismissed = localStorage.getItem(`completionPrompt_dismissed_${roomData?.id}`);
-			const alreadyDismissedToday = lastDismissed === today;
-			
-			// Show completion prompt when all tasks are completed (on progress tab)
-			// Only show ONCE per completion - check both ref and localStorage
-			if (allCompleted && !showCompletionPrompt && !completionPromptShownRef.current && !alreadyDismissedToday) {
-				// Delay showing prompt slightly to ensure smooth UX
-				const timer = setTimeout(() => {
-					setShowCompletionPrompt(true);
-					completionPromptShownRef.current = true; // Mark as shown
-				}, 500);
-				return () => clearTimeout(timer);
-			}
-			
-			// Reset flag when tasks are no longer all completed (new day, new tasks)
-			// But DON'T reset if already dismissed today
-			if (!allCompleted && !alreadyDismissedToday) {
-				completionPromptShownRef.current = false;
-			}
-		}
-	}, [displayTodaysTasks, activeView, showCompletionPrompt, roomData?.id]);
-
-	// ========== QUIZ BACKEND INTEGRATION ==========
-	
-	// Fetch available quizzes on mount and when activeView changes to 'quiz'
-	useEffect(() => {
-		const fetchQuizzes = async () => {
-			if (!roomData?.id || activeView !== 'quiz') return;
-			
-			try {
-				setQuizLoading(true);
-				const response = await roomService.getQuizzes(roomData.id);
-				setAvailableQuizzes(response.quizzes || []);
-			} catch (err) {
-				console.error('Failed to fetch quizzes:', err);
-			} finally {
-				setQuizLoading(false);
-			}
-		};
-
-		fetchQuizzes();
-	}, [roomData?.id, activeView]);
-
-	// Calculate remaining quizzes for today
-	useEffect(() => {
-		if (!roomData?.id || !currentUserId) return;
-		
-		const today = new Date().toDateString();
-		const quizCountKey = `quiz_count_${roomData.id}_${currentUserId}_${today}`;
-		const quizCount = parseInt(localStorage.getItem(quizCountKey) || '0');
-		const remaining = Math.max(0, 2 - quizCount);
-		
-		console.log('🔢 Quiz Counter Update:', {
-			roomId: roomData.id,
-			today,
-			quizCountKey,
-			quizCount,
-			remaining
-		});
-		
-		setQuizzesRemaining(remaining);
-	}, [roomData?.id, currentUserId, activeView, availableQuizzes]);
-
-	// Generate new quiz
-	const handleGenerateQuiz = async () => {
-		if (!roomData?.id) return;
-		
-		try {
-			// Check quiz generation limit (2 per day)
-			const today = new Date().toDateString();
-			const quizCountKey = `quiz_count_${roomData.id}_${currentUserId}_${today}`;
-			const quizCount = parseInt(localStorage.getItem(quizCountKey) || '0');
-			
-			if (quizCount >= 2) {
-				// Redirect to pro page
-				alert('🎯 Daily Quiz Limit Reached!\n\nYou\'ve generated 2 quizzes today. Upgrade to Learncurve Pro for unlimited quizzes!');
-				// TODO: Navigate to pro page
-				// window.location.href = '/pro';
-				return;
-			}
-			
-		setGeneratingQuiz(true);
-		
-		// Collect ALL completed topics from multiple sources
-		const completedTopics = [];
-		
-		// 1. Get TODAY'S completed topics from displayTodaysTasks
-		displayTodaysTasks
-			.filter(task => task.completed)
-			.forEach(task => {
-				if (completedTopics.length < 5) {
-					completedTopics.push(task.title);
-				}
-			});
-		
-		// 2. Add additional completed topics (not in today's schedule)
-		if (completedTopics.length < 5 && additionalTopics && additionalTopics.length > 0) {
-			additionalTopics.forEach(topic => {
-				if (completedTopics.length < 5) {
-					completedTopics.push(topic.title);
-				}
-			});
-		}
-		
-		// 3. Fallback: Check roadmap for any other completed topics
-		if (completedTopics.length < 5 && roadmapItems) {
-			roadmapItems.forEach(milestone => {
-				milestone.topics?.forEach(topic => {
-					if (completedTopics.length < 5) {
-						// Handle both object and string topics
-						const topicTitle = typeof topic === 'string' ? topic : (topic.title || topic.name);
-						const topicStatus = typeof topic === 'object' ? topic.status : null;
-						const topicIsCompleted = typeof topic === 'object' && topic.isCompleted;
-						
-						// Check if topic is completed and not already in list
-						if ((topicStatus === 'completed' || topicIsCompleted) && !completedTopics.includes(topicTitle)) {
-							completedTopics.push(topicTitle);
-						}
-					}
-				});
-			});
-		}
-		
-		console.log('📝 Generating quiz from completed topics:', completedTopics);
-
-		// If still no topics, show message
-		if (completedTopics.length === 0) {
-			alert('📚 Complete some topics first!\n\nYou need to complete at least one topic before generating a quiz.');
-			setGeneratingQuiz(false);
-			return;
-		}
-		
-		console.log('⏳ Starting quiz generation...');
-		
-		const response = await roomService.generateQuiz(
-				roomData.id,
-				new Date().toISOString().split('T')[0], // Today's date YYYY-MM-DD
-				completedTopics,
-				'medium' // difficulty
-			);
-
-			console.log('📊 Quiz Generation Response:', response);
-
-			// Backend returns quiz data inside response.data (via sendSuccess wrapper)
-			const quiz = response.quiz || response.data;
-			console.log('📋 Quiz object:', quiz);
-			console.log('❓ Questions:', quiz?.questions);
-			console.log('❓ Questions length:', quiz?.questions?.length);
-
-			// Validate quiz has questions
-			if (!quiz || !quiz.questions || quiz.questions.length === 0) {
-				throw new Error('Quiz generated but contains no questions');
-			}
-
-			// Add the new quiz to available quizzes
-			setAvailableQuizzes(prev => [...prev, quiz]);
-			
-			// Increment quiz count for today
-			const newCount = quizCount + 1;
-			localStorage.setItem(quizCountKey, newCount.toString());
-			
-			console.log('✅ Quiz generated! Updated counter:', {
-				quizCountKey,
-				oldCount: quizCount,
-				newCount: newCount,
-				remaining: 2 - newCount
-			});
-			
-			// Update remaining quizzes count
-			setQuizzesRemaining(Math.max(0, 2 - newCount));
-			
-			console.log('✅ Quiz generated successfully! Quizzes used today:', newCount, '/2');
-			
-			// Show success message
-			alert('✅ Quiz Generated!\n\n' + quiz.questions.length + ' questions ready. Good luck!');
-		} catch (err) {
-			console.error('❌ Failed to generate quiz:', err);
-			
-			// Specific error messages
-			if (err.message && err.message.includes('timeout')) {
-				alert('⏱️ Quiz Generation Timeout\n\nThe AI is taking too long to generate questions. This usually happens when:\n\n• The AI service is slow\n• Network is unstable\n\nPlease try again in a moment.');
-			} else if (err.message && err.message.includes('no questions')) {
-				alert('⚠️ Empty Quiz Generated\n\nThe AI generated a quiz but it has no questions. Please try again.');
-			} else {
-				alert('❌ Quiz Generation Failed\n\n' + (err.message || 'Unknown error') + '\n\nPlease try again.');
-			}
-		} finally {
-			setGeneratingQuiz(false);
+			setCreatingTest(false);
 		}
 	};
 
-	// Handle quiz answer selection
-	const handleQuizAnswer = (questionId, answerIndex) => {
-		setSelectedAnswers((prev) => ({
-			...prev,
-			[questionId]: answerIndex,
-		}));
-	};
-
-	// Submit quiz to backend
-	const submitQuiz = async () => {
-		if (!roomData?.id || !currentQuiz?._id) return;
-		
-		try {
-			setQuizLoading(true);
-
-			// Convert selected answers object to array format expected by backend
-			const answersArray = currentQuiz.questions.map((question, index) => {
-				const selectedIndex = selectedAnswers[question._id || question.id || index];
-				return selectedIndex !== undefined ? selectedIndex : -1;
-			});
-
-			const response = await roomService.submitQuiz(
-				roomData.id,
-				currentQuiz._id,
-				answersArray
-			);
-
-			// Show results
-			setQuizResults(response.results);
-
-		} catch (err) {
-			console.error('Failed to submit quiz:', err);
-		} finally {
-			setQuizLoading(false);
-		}
-	};
-
-	// Reset quiz (go back to quiz list)
-	const handleResetQuiz = () => {
-		setCurrentQuiz(null);
-		setSelectedAnswers({});
-		setQuizResults(null);
-	};
-
-	// ========== END QUIZ BACKEND INTEGRATION ==========
-
-
-	const handleContinueMilestone = async (milestoneId, specificTopic = null) => {
-		console.log('🎯 handleContinueMilestone called:', { milestoneId, specificTopic });
-		const milestone = roadmapItems.find(m => m.id === milestoneId);
-		if (milestone) {
-			console.log('📚 Found milestone:', milestone);
-			// Create a task object from milestone for the study session
-			const task = {
-				id: milestone.id,
-				title: milestone.title,
-				description: milestone.description,
-				milestoneId: milestone.id,
-				phaseIndex: milestone.phaseIndex,
-				milestoneIndex: milestone.milestoneIndex,
-				specificTopic: specificTopic, // Pass the specific topic to study
-			};
-			
-			console.log('📝 Created task with specificTopic:', task);
-			setSelectedTask(task);
-			setSelectedMilestone(milestone);
-			
-			// Auto-minimize timer and open study panel immediately
-			setShowMinimizedTimer(true);
-			setShowStudyPanel(true);
-			
-			// Start focus session with persistence
-			console.log('⏱️ Starting focus session...');
-			await startSession(task, milestone);
-		} else {
-			console.error('❌ Milestone not found for id:', milestoneId);
-		}
-	};
-
-	const handleStartMilestoneTracking = (milestoneId) => {
-		// Create a task from the milestone for tracking
-		const milestone = roadmapItems.find(m => m.id === milestoneId);
-		if (milestone) {
-			setSelectedTask({
-				id: milestone.id,
-				title: milestone.title,
-			});
-			setSelectedMilestone(milestone);
-			setShowTimerModal(true);
-		}
-	};
-
-	const handleTaskComplete = (data) => {
-		// Call parent handler if provided
-		if (onTaskComplete) {
-			onTaskComplete(data);
-		}
-	};
-
-	// ========== ADDITIONAL TOPICS HANDLING ==========
-	// Handle continuation with additional topics
-	const handleContinueLearning = async () => {
-		try {
-			setShowCompletionPrompt(false);
-			
-			// Save dismissal to localStorage (per room, per day)
-			const today = new Date().toDateString();
-			localStorage.setItem(`completionPrompt_dismissed_${roomData?.id}`, today);
-			
-			// ✨ Additional topics are already tracked in the roadmap as completed
-			// No need to persist separately - they're automatically included in progress
-			
-			const completedTopics = displayTodaysTasks.filter(t => t.completed);
-			console.log('✅ Continuing with', completedTopics.length, 'completed topics');
-			
-			// Show next available topic or prompt for more topics
-			// This can be extended to fetch the next topic from the roadmap
-			// and auto-start the study session
-		} catch (error) {
-			console.error('❌ Failed to continue learning:', error);
-		}
-	};
-
-	// Handle stopping for the day
-	const handleStopForToday = () => {
-		setShowCompletionPrompt(false);
-		
-		// Save dismissal to localStorage (per room, per day)
-		const today = new Date().toDateString();
-		localStorage.setItem(`completionPrompt_dismissed_${roomData?.id}`, today);
-		
-		// Optional: Call the onContinueToNextDay callback or reset state
-		if (onContinueToNextDay) {
-			onContinueToNextDay();
-		}
-	};
-
-	const [kanbanColumns] = useState({
-		todo: {
-			id: "todo",
-			title: "To Do",
-			color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-			tasks: [
-				{
-					id: "1",
-					title: "Learn React Hooks",
-					description: "useState, useEffect, useContext",
-					priority: "high",
-				},
-				{
-					id: "2",
-					title: "Build Todo App",
-					description: "Practice CRUD operations",
-					priority: "medium",
-				},
-				{
-					id: "3",
-					title: "CSS Grid Layout",
-					description: "Master CSS Grid fundamentals",
-					priority: "low",
-				},
-			],
-		},
-		inprogress: {
-			id: "inprogress",
-			title: "In Progress",
-			color:
-				"bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-			tasks: [
-				{
-					id: "4",
-					title: "JavaScript ES6+",
-					description: "Arrow functions, destructuring",
-					priority: "high",
-				},
-				{
-					id: "5",
-					title: "API Integration",
-					description: "Fetch data from REST APIs",
-					priority: "medium",
-				},
-			],
-		},
-		review: {
-			id: "review",
-			title: "Review",
-			color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-			tasks: [
-				{
-					id: "6",
-					title: "Portfolio Website",
-					description: "Get feedback on design",
-					priority: "high",
-				},
-			],
-		},
-		done: {
-			id: "done",
-			title: "Done",
-			color:
-				"bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-			tasks: [
-				{
-					id: "7",
-					title: "HTML Fundamentals",
-					description: "Semantic HTML, forms",
-					priority: "completed",
-				},
-				{
-					id: "8",
-					title: "CSS Flexbox",
-					description: "Layout and alignment",
-					priority: "completed",
-				},
-			],
-		},
-	});
-
-	const quizData = {
-		title: "React Fundamentals Quiz",
-		description: "Test your knowledge of React basics",
-		timeLimit: 300, // 5 minutes
-		questions: [
-			{
-				id: 1,
-				question: "What is JSX in React?",
-				options: [
-					"JavaScript XML syntax extension",
-					"Java Syntax Extension",
-					"JavaScript Extension only",
-					"JSON XML format",
-				],
-				correct: 0,
-			},
-			{
-				id: 2,
-				question: "Which hook is used for side effects in React?",
-				options: ["useState", "useEffect", "useContext", "useReducer"],
-				correct: 1,
-			},
-			{
-				id: 3,
-				question: "What does the 'key' prop help React with?",
-				options: [
-					"Styling components",
-					"Handling events",
-					"Identifying which items have changed",
-					"State management",
-				],
-				correct: 2,
-			},
-		],
+	/** Results are stamped with a UTC instant; show them in local time. */
+	const formatResultDate = (value) => {
+		if (!value) return "";
+		const d = new Date(value);
+		if (Number.isNaN(d.getTime())) return "";
+		return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 	};
 
 	// Helper functions
-	const getProgressStatusColor = (status) => {
+	const getStatusColor = (status) => {
 		switch (status) {
-			case "ahead":
-				return "text-green-500";
-			case "on-track":
-				return "text-blue-500";
-			case "behind":
-				return "text-red-500";
-			default:
-				return "text-text/60";
+			case "ahead":    return "text-green-500";
+			case "on-track": return "text-blue-500";
+			case "behind":   return "text-red-500";
+			default:         return "text-text/60";
 		}
 	};
 
-	const getPriorityColor = (priority) => {
-		switch (priority) {
-			case "high":
-				return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
-			case "medium":
-				return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300";
-			case "low":
-				return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300";
-			case "completed":
-				return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300";
-			default:
-				return "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300";
+	const getStatusBarColor = (status) => {
+		switch (status) {
+			case "ahead":    return "bg-green-500";
+			case "behind":   return "bg-red-500";
+			default:         return "bg-primary";
 		}
 	};
 
-	// Keyboard shortcuts
-	useEffect(() => {
-		const handleKeyDown = (e) => {
-			// ESC to close modals
-			if (e.key === 'Escape') {
-				if (showTimerModal) {
-					setShowTimerModal(false);
-				} else if (showMilestoneModal) {
-					setShowMilestoneModal(false);
-				} else if (currentQuiz) {
-					handleResetQuiz();
-				}
+	const handleQuizAnswer = (questionId, answerIndex) => {
+		setSelectedAnswers(prev => ({ ...prev, [questionId]: answerIndex }));
+	};
+
+	const handleStartQuiz = (quiz) => {
+		setCurrentQuiz(quiz);
+		setSelectedAnswers({});
+		setQuizResult(null);
+		setQuizError("");
+	};
+
+	const submitQuiz = async () => {
+		if (!currentQuiz) return;
+		const questions = Array.isArray(currentQuiz.questions) ? currentQuiz.questions : [];
+		if (questions.length === 0) {
+			setQuizError("This quiz has no questions yet.");
+			return;
+		}
+		setQuizSubmitting(true);
+		setQuizError("");
+		const answers = questions.map(q => ({
+			questionId: q.id,
+			selectedAnswerIndex: selectedAnswers[q.id] ?? 0,
+		}));
+		try {
+			const res = await submitQuizAnswers(roomData.id, currentQuiz.id, answers);
+			// The backend strips `correctAnswerIndex` from the quiz payload, so the
+			// ONLY honest source of a score is the server's grading response.
+			const total = Number(res?.totalQuestions ?? questions.length);
+			const score = Number(res?.scorePercent);
+			setQuizResult({
+				scorePercent: Number.isFinite(score) ? score : 0,
+				correctCount: Number(res?.correctCount ?? 0),
+				totalQuestions: total,
+				explanation: res?.explanation || "",
+				earnedAchievement: res?.earnedAchievement || null,
+			});
+			if (score >= 80) {
+				// Server marks slot 3 completed on passing quiz submit; update local state optimistically
+				setTodaysTasks(prev => prev.map(t => t.id === "task-today-3" ? { ...t, completed: true } : t));
 			}
-		};
+		} catch (err) {
+			// No local fallback scoring — without correctAnswerIndex it always
+			// scored 0%. Report the failure instead of inventing a result.
+			setQuizResult(null);
+			setQuizError(err?.message || "Could not grade your answers. Please try again.");
+		} finally {
+			setQuizSubmitting(false);
+		}
+	};
 
-		window.addEventListener('keydown', handleKeyDown);
-		return () => window.removeEventListener('keydown', handleKeyDown);
-	}, [showTimerModal, showMilestoneModal, currentQuiz]);
+	const completedTaskCount = todaysTasks.filter(t => t.completed).length;
+	const currentMember = members.find(m => m.isCurrentUser);
+	const allRoadmapTasks = roadmapItems.flatMap(item => item.tasks || []);
+	const totalRoadmapTasks = allRoadmapTasks.length;
+	const completedRoadmapTasks = allRoadmapTasks.filter(t => t.completed).length;
+	const roadmapProgressPercent = totalRoadmapTasks > 0
+		? Math.round((completedRoadmapTasks / totalRoadmapTasks) * 100)
+		: (currentMember?.progress ?? 0);
+	const userProgress = currentMember?.progress ?? roadmapProgressPercent;
+
+	// Which milestone subtopic lists are open. A Set, not a single id, so opening
+	// one topic does not collapse another.
+	const [expandedTopics, setExpandedTopics] = useState(() => new Set());
+
+	const toggleSubtopic = (id) => {
+		setExpandedTopics(prev => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+
+	/**
+	 * The subtopics belonging to one roadmap milestone.
+	 *
+	 * Roadmap entries reach the UI in more than one shape (the AI roadmap, the
+	 * Mongo roadmap modules, the deterministic default board), so this reads
+	 * whichever field is actually present instead of assuming one. Always an
+	 * array, always strings, so callers never guard.
+	 */
+	const getSubtopics = (item) => {
+		const raw = item?.subtopics || item?.topics || item?.subTopics || [];
+		if (!Array.isArray(raw)) return [];
+		return raw
+			.map(s => {
+				if (typeof s === "string") return s.trim();
+				if (!s || typeof s !== "object") return "";
+				return String(s.title || s.name || s.text || "").trim();
+			})
+			.filter(Boolean);
+	};
+
+	/**
+	 * The lesson list that drops down from one topic.
+	 *
+	 * Each topic reads "Lesson 1 → Lesson 2 → Checkpoint", then the next topic
+	 * repeats the same shape. `tasks` is where those actually live; `subtopics`
+	 * (the wizard's concept list) is the fallback for payloads with no tasks, so
+	 * the disclosure never renders as an empty box.
+	 */
+	const getTopicSteps = (item) => {
+		if (Array.isArray(item?.tasks) && item.tasks.length > 0) {
+			return item.tasks.map(t => ({
+				id: t.id,
+				title: t.title,
+				duration: t.duration || "",
+				completed: t.completed === true,
+			}));
+		}
+		return getSubtopics(item).map((title, i) => ({
+			id: `${item?.id || "topic"}-sub-${i}`,
+			title,
+			duration: "",
+			completed: false,
+		}));
+	};
+	// The schedule window is null when the backend cannot derive it from the
+	// room's start date/timeframe. Guard so we show "Week 1" rather than NaN.
+	const knownTotalDays = typeof roomData.totalDays === "number" && roomData.totalDays > 0
+		? roomData.totalDays
+		: null;
+	const knownDaysLeft = typeof roomData.daysRemaining === "number" ? roomData.daysRemaining : null;
+	const currentWeek = knownTotalDays !== null && knownDaysLeft !== null
+		? Math.max(1, Math.ceil((knownTotalDays - knownDaysLeft) / 7))
+		: 1;
+	const totalWeeks = knownTotalDays !== null ? Math.ceil(knownTotalDays / 7) : 4;
+
+	// Guards against an empty question set (0/0 used to render "NaN%").
+	const activeQuestions = Array.isArray(currentQuiz?.questions) ? currentQuiz.questions : [];
+	const answeredCount = activeQuestions.filter(q => selectedAnswers[q.id] !== undefined).length;
+	const quizProgressPercent = activeQuestions.length === 0
+		? 0
+		: Math.round((answeredCount / activeQuestions.length) * 100);
 
 	return (
-		<>
-			<div className="flex h-full">
+		<div className="flex h-full">
 			{/* Main Content Area */}
-			<div
-				className={`flex-1 overflow-hidden p-0 transition-all duration-300 ${
-					showMembers ? "mr-0" : "mx-0"
-				} ${showStudyPanel && selectedMilestone && activeView === "roadmap" ? "max-w-lg" : ""}`}
-			>
+			<div className="flex-1 overflow-hidden p-0 transition-all duration-300">
+
 				{/* Progress View */}
 				{activeView === "progress" && (
 					<div className="space-y-6 p-6 h-full overflow-y-auto">
-						{progressLoading ? (
-							<div className="space-y-6">
-								{/* Stats Skeleton */}
-								<div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-									{[1, 2, 3].map((i) => (
-										<CardSkeleton key={i} />
-									))}
-								</div>
-								{/* Tasks Skeleton */}
-								<div className="space-y-3 p-6 rounded-xl bg-white dark:bg-gray-800">
-									{[1, 2, 3].map((i) => (
-										<TaskSkeleton key={i} />
-									))}
-								</div>
-							</div>
-						) : (
-							<>
 						{/* Stats Grid */}
 						<div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 							{[
 								{
 									title: "Overall Progress",
-									value: `${roomData.averageProgress || userProgress?.progressPercentage || roomData.completionRate || 0}%`,
+									value: `${userProgress}%`,
 									icon: TrendingUp,
 									color: "text-primary",
 									bgColor: "bg-primary/10",
+									bar: userProgress,
 								},
 								{
 									title: "Days Remaining",
-									value: roomData.daysRemaining || 'N/A',
+									value: knownDaysLeft ?? "—",
 									icon: Clock,
 									color: "text-orange-500",
 									bgColor: "bg-orange-500/10",
+									bar: knownTotalDays && knownDaysLeft !== null
+										? Math.round(((knownTotalDays - knownDaysLeft) / knownTotalDays) * 100)
+										: 0,
 								},
 								{
-									title: "Daily Streak",
-									value: userProgress?.dailyStreak || 0,
+									title: "Active Members",
+									value: roomData.activeUsers ?? members.length,
 									icon: Target,
 									color: "text-green-500",
 									bgColor: "bg-green-500/10",
+									bar: null,
 								},
 							].map((stat, index) => (
 								<motion.div
@@ -932,21 +294,25 @@ const RoomContent = ({
 									transition={{ delay: index * 0.1 }}
 								>
 									<Card className="p-6 hover:shadow-lg transition-shadow">
-										<div className="flex items-center justify-between">
+										<div className="flex items-center justify-between mb-3">
 											<div>
-												<p className="text-text/60 text-sm font-medium">
-													{stat.title}
-												</p>
-												<p className={`text-3xl font-bold ${stat.color} mt-1`}>
-													{stat.value}
-												</p>
+												<p className="text-text/60 text-sm font-medium">{stat.title}</p>
+												<p className={`text-3xl font-bold ${stat.color} mt-1`}>{stat.value}</p>
 											</div>
-											<div
-												className={`w-12 h-12 rounded-xl ${stat.bgColor} flex items-center justify-center`}
-											>
+											<div className={`w-12 h-12 rounded-xl ${stat.bgColor} flex items-center justify-center`}>
 												<stat.icon className={`w-6 h-6 ${stat.color}`} />
 											</div>
 										</div>
+										{stat.bar !== null && (
+											<div className="w-full h-1.5 bg-text/10 rounded-full mt-2">
+												<motion.div
+													initial={{ width: 0 }}
+													animate={{ width: `${Math.min(stat.bar, 100)}%` }}
+													transition={{ duration: 1, ease: "easeOut" }}
+													className={`h-full rounded-full ${stat.color.replace("text-", "bg-")}`}
+												/>
+											</div>
+										)}
 									</Card>
 								</motion.div>
 							))}
@@ -960,138 +326,98 @@ const RoomContent = ({
 									Today's Tasks
 								</h3>
 								<Badge variant="primary" className="bg-primary/10 text-primary">
-									{displayTodaysTasks.filter((task) => task.completed).length} /{" "}
-									{displayTodaysTasks.length} completed
+									{completedTaskCount} / {todaysTasks.length} completed
 								</Badge>
 							</div>
-							
-							{/* ✨ Show message when all tasks complete */}
-							{displayTodaysTasks.length > 0 && displayTodaysTasks.every(task => task.completed) ? (
-								<div className="flex flex-col items-center justify-center py-12 text-center">
-									<div className="w-20 h-20 rounded-full bg-green-500/10 flex items-center justify-center mb-4">
-										<Trophy className="w-10 h-10 text-green-500" />
-									</div>
-									<h3 className="text-2xl font-bold text-text mb-2">All Tasks Complete! 🎉</h3>
-									<p className="text-text/60 max-w-md mb-6">
-										Amazing work! You've completed all your tasks for today. Ready to move forward?
-									</p>
-									<Button
-										variant="primary"
-										onClick={onContinueToNextDay}
-										className="flex items-center gap-2"
-									>
-										<ArrowRight className="w-5 h-5" />
-										Continue to Next Tasks
-									</Button>
+
+							{/* Task completion progress bar */}
+							{todaysTasks.length > 0 && (
+								<div className="w-full h-2 bg-text/10 rounded-full mb-5">
+									<motion.div
+										initial={{ width: 0 }}
+										animate={{ width: `${Math.round((completedTaskCount / todaysTasks.length) * 100)}%` }}
+										transition={{ duration: 0.8 }}
+										className="h-full bg-primary rounded-full"
+									/>
 								</div>
-							) : displayTodaysTasks.length === 0 ? (
-								<div className="flex flex-col items-center justify-center py-12 text-center">
-									<div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-										<Calendar className="w-10 h-10 text-primary/50" />
+							)}
+
+							<div className="space-y-3">
+								{loading ? (
+									<div className="flex items-center justify-center py-8 text-text/40">
+										<Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading tasks...
 									</div>
-									<h3 className="text-xl font-medium text-text mb-2">No Tasks for Today</h3>
-									<p className="text-text/60 max-w-md">
-										All milestones are complete or your timeline hasn't started yet.
-									</p>
-								</div>
-							) : (
-								<div className="space-y-3">
-								{displayTodaysTasks.map((task, index) => (
+								) : scheduleState.notStarted ? (
+									<div className="text-center py-8 px-4 bg-alt/10 rounded-xl">
+										<Calendar className="w-8 h-8 text-primary mx-auto mb-2 opacity-80" />
+										<p className="font-semibold text-text">Room has not started yet</p>
+										<p className="text-sm text-text/60 mt-1">Starts on {scheduleState.startsOn}</p>
+									</div>
+								) : scheduleState.restDay ? (
+									<div className="text-center py-8 px-4 bg-alt/10 rounded-xl">
+										<Clock className="w-8 h-8 text-orange-400 mx-auto mb-2 opacity-80" />
+										<p className="font-semibold text-text">Rest Day</p>
+										<p className="text-sm text-text/60 mt-1">No tasks scheduled for today according to room availability ({scheduleState.availability || "schedule"}).</p>
+									</div>
+								) : todaysTasks.length === 0 ? (
+									<p className="text-center text-text/40 py-6">No tasks for today yet.</p>
+								) : todaysTasks.map((task, index) => {
+									// The checkpoint is a TEST, not a checkbox. It used to be a
+									// third row you simply ticked off, which meant the quiz was
+									// "completed" without ever being taken — and nothing marked it
+									// done when the quiz was actually passed.
+									const isTest = task.id === "task-today-3";
+									return (
 									<motion.div
 										key={task.id}
 										initial={{ opacity: 0, x: -20 }}
 										animate={{ opacity: 1, x: 0 }}
-										transition={{ delay: index * 0.1 }}
-										className={`flex items-center justify-between p-4 rounded-xl transition-all ${
+										transition={{ delay: index * 0.07 }}
+										className={`flex items-center justify-between p-4 rounded-xl transition-all select-none ${
 											task.completed
 												? "bg-green-50 dark:bg-green-900/20"
 												: "bg-alt/10 hover:bg-alt/20"
 										}`}
+										// A test row must not toggle itself; the button below owns it.
+										onClick={isTest ? undefined : () => onToggleTask?.(task.id, task.completed)}
 									>
 										<div className="flex items-center space-x-3">
-											{task.completed ? (
-												<CheckCircle className="w-6 h-6 text-green-500" />
-											) : (
-												<button
-													onClick={() => onTopicComplete && onTopicComplete(task)}
-													className="focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-full transition-all hover:scale-110"
-													aria-label="Mark topic as complete"
-												>
-													<Circle className="w-6 h-6 text-text/40 hover:text-primary cursor-pointer" />
-												</button>
-											)}
+											<motion.div whileTap={isTest ? undefined : { scale: 0.85 }}>
+												{task.completed
+													? <CheckCircle className="w-6 h-6 text-green-500" />
+													: isTest
+														? <ClipboardCheck className="w-6 h-6 text-primary" />
+														: <Circle className="w-6 h-6 text-text/40" />
+												}
+											</motion.div>
 											<div>
-												<p
-													className={`font-medium ${
-														task.completed
-															? "text-text/60 line-through"
-															: "text-text"
-													}`}
-												>
+												<p className={`font-medium ${task.completed ? "text-text/50 line-through" : "text-text"}`}>
 													{task.title}
 												</p>
-												{task.milestone && (
-													<p className="text-sm text-text/60">
-														<span className="text-primary/80">
-															{task.milestone}
-														</span>
+												{task.duration && (
+													<p className="text-xs text-text/40 mt-0.5 flex items-center">
+														<Clock className="w-3 h-3 mr-1" />{task.duration}
 													</p>
 												)}
 											</div>
 										</div>
-										{!task.completed && (
-											<Button 
-												variant="ghost" 
-												size="sm"
-												onClick={() => handleStartTask && handleStartTask(task.id)}
+										{isTest && !task.completed ? (
+											<button
+												type="button"
+												onClick={(e) => { e.stopPropagation(); onOpenQuiz?.(); }}
+												className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 transition-opacity flex-shrink-0"
 											>
-												<PlayCircle className="w-4 h-4 mr-1" />
-												Start
-											</Button>
-										)}
+												<PlayCircle className="w-4 h-4" />
+												Take Test
+											</button>
+										) : !task.completed ? (
+											<PlayCircle className="w-5 h-5 text-primary/50 flex-shrink-0" />
+										) : null}
 									</motion.div>
-								))}
+									);
+								})}
 							</div>
-							)}
 						</Card>
-
-						{/* Additional Topics Covered */}
-						{additionalTopics && additionalTopics.length > 0 && (
-							<Card className="p-6">
-								<div className="flex items-center justify-between mb-6">
-									<h3 className="text-xl font-semibold text-text flex items-center">
-										<BookOpen className="w-5 h-5 mr-2 text-purple-500" />
-										Additional Topics Covered
-									</h3>
-									<Badge variant="primary" className="bg-purple-500/10 text-purple-500">
-										{additionalTopics.length} topics
-									</Badge>
-								</div>
-								<div className="space-y-2">
-									{additionalTopics.map((topic, index) => (
-										<motion.div
-											key={topic.id || topic._id || `topic-${index}-${topic.title}`}
-											initial={{ opacity: 0, x: -20 }}
-											animate={{ opacity: 1, x: 0 }}
-											transition={{ delay: index * 0.05 }}
-											className="flex items-center p-3 rounded-lg bg-purple-50 dark:bg-purple-900/20"
-										>
-											<CheckCircle className="w-5 h-5 text-purple-500 mr-3 flex-shrink-0" />
-											<div className="flex-1">
-												<p className="font-medium text-text">{topic.title || topic.name}</p>
-												{topic.completedAt && (
-													<p className="text-xs text-text/60">
-														Completed {new Date(topic.completedAt).toLocaleDateString()}
-													</p>
-												)}
-											</div>
-										</motion.div>
-									))}
-								</div>
-							</Card>
-						)}
-						</>
-						)}
 					</div>
 				)}
 
@@ -1099,483 +425,454 @@ const RoomContent = ({
 				{activeView === "roadmap" && (
 					<div className="space-y-6 p-4 h-full overflow-y-auto mb-32">
 						<div className="flex items-center justify-between">
-							<div>
-								<p className="text-text/60 mt-1 flex items-center">
-									{" "}
-									<BookOpen className="w-4 h-4 mr-3 text-primary" />
-									{roomData.roadmap ? "Your learning roadmap" : "Roadmap will be generated"}
-								</p>
-							</div>
-							{roomData.roadmap && roomData.daysRemaining !== undefined && (
-								<Badge
-									variant="primary"
-									className="bg-primary/10 text-primary px-4 py-2"
-								>
-									Week {Math.max(1, Math.min(Math.ceil((30 - Math.max(0, roomData.daysRemaining)) / 7), 4))} of 4
+							<p className="text-text/60 flex items-center">
+								<BookOpen className="w-4 h-4 mr-2 text-primary" />
+								{roomData.description || "Your learning journey"}
+							</p>
+							<div className="flex items-center gap-2">
+								{roadmapGeneratedBy === "template" && (
+									<Badge variant="outline" className="text-xs text-text/60 border-text/20">
+										Template roadmap
+									</Badge>
+								)}
+								<Badge variant="primary" className="bg-primary/10 text-primary px-4 py-2">
+									Module {currentWeek} of {totalWeeks}
 								</Badge>
-							)}
+							</div>
 						</div>
 
-						{roadmapItems.length === 0 ? (
-							<div className="flex flex-col items-center justify-center py-20 text-center">
-								<div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-									<BookOpen size={40} className="text-primary/50" />
+						{/* Adaptive Re-Plan Banner for Creator */}
+						{roomData.isCreator && (
+							<div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-xl bg-gradient-to-r from-primary/10 via-primary/5 to-alt/20 border border-primary/20">
+								<div className="flex items-center gap-3">
+									<div className="w-8 h-8 rounded-lg bg-primary/20 text-primary flex items-center justify-center flex-shrink-0">
+										<RotateCcw size={16} />
+									</div>
+									<div>
+										<p className="text-xs font-semibold text-text">Life got in the way?</p>
+										<p className="text-xs text-text/60">Re-plan remaining unstarted modules to fit your current schedule without losing past progress.</p>
+									</div>
 								</div>
-								<h3 className="text-xl font-medium text-text mb-2">No Roadmap Yet</h3>
-								<p className="text-sm text-text/70 mb-6 max-w-md">
-									The AI-powered roadmap for this room hasn't been generated yet. The host can generate it to start your learning journey.
-								</p>
+								<Button
+									size="sm"
+									variant="outline"
+									onClick={() => setShowReplanModal(true)}
+									className="flex items-center gap-1.5 text-xs whitespace-nowrap border-primary/30 text-primary hover:bg-primary/10"
+								>
+									<Wand2 size={13} />
+									<span>Re-plan Remaining</span>
+								</Button>
 							</div>
-						) : (
-							<div className="relative">
-								{/* Progress Line */}
-								<div className="absolute left-8 top-8 bottom-8 w-0.5 bg-text/20"></div>
+						)}
 
-								<div className="space-y-6">
-									{roadmapItems.map((item, index) => (
+						{/* Roadmap overall progress bar */}
+						{(roadmapItems.length > 0 || totalRoadmapTasks > 0) && (
+							<div className="px-1">
+								<div className="flex justify-between text-xs text-text/50 mb-1">
+									<span>{completedRoadmapTasks} of {totalRoadmapTasks} tasks completed</span>
+									<span>{userProgress}%</span>
+								</div>
+								<div className="w-full h-2 bg-text/10 rounded-full">
+									<motion.div
+										initial={{ width: 0 }}
+										animate={{ width: `${userProgress}%` }}
+										transition={{ duration: 1, ease: "easeOut" }}
+										className="h-full bg-primary rounded-full"
+									/>
+								</div>
+							</div>
+						)}
+
+						<div className="relative">
+							<div className="absolute left-8 top-8 bottom-8 w-0.5 bg-text/20" />
+							<div className="space-y-6">
+								{loading ? (
+									<div className="flex items-center justify-center py-12 text-text/40">
+										<Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading roadmap...
+									</div>
+								) : roadmapItems.length === 0 ? (
+									<p className="text-center text-text/40 py-8 ml-16">No roadmap items yet.</p>
+								) : roadmapItems.map((item, index) => (
 									<motion.div
 										key={item.id}
 										initial={{ opacity: 0, x: -20 }}
 										animate={{ opacity: 1, x: 0 }}
-										transition={{ delay: index * 0.1 }}
+										transition={{ delay: index * 0.07 }}
 										className="relative"
 									>
 										<Card
-											className={`ml-16 p-6 transition-all hover:shadow-lg ${
+											className={`ml-16 p-5 transition-all hover:shadow-lg ${
 												item.current ? "ring-2 ring-primary shadow-lg" : ""
 											}`}
 										>
-											<div className="flex items-center justify-between">
-												<div className="flex items-center space-x-4">
-													<div
-														className={`absolute -left-16 w-16 h-16 rounded-full flex items-center justify-center ${
-															item.completed
-																? "bg-green-500"
-																: item.current
-																? "bg-primary"
-																: "bg-text/20"
-														}`}
-													>
-														{item.completed ? (
-															<CheckCircle className="w-8 h-8 text-white" />
-														) : (
-															<PlayCircle className="w-8 h-8 text-white" />
-														)}
-													</div>
-													<div>
-														<h3 className="text-xl font-semibold text-text">
-															{item.title}
-														</h3>
-														<p className="text-text/60">Week {item.week}</p>
-														{item.current && (
-															<div className="flex items-center mt-2">
-																<Badge
-																	variant="primary"
-																	className="bg-primary/10 text-primary mr-2"
-																>
-																	Current
-																</Badge>
-																<Zap className="w-4 h-4 text-primary" />
-															</div>
-														)}
-													</div>
-												</div>
-												{item.current && (
-													showStudyPanel && selectedMilestone?.id === item.id ? (
-														<Button 
-															variant="primary"
-															onClick={() => setExpandedMilestoneId(expandedMilestoneId === item.id ? null : item.id)}
-															className="flex items-center gap-2"
-														>
-															{expandedMilestoneId === item.id ? 'Hide Topics' : 'Topics'}
-															<ArrowRight className={`w-4 h-4 transition-transform ${expandedMilestoneId === item.id ? 'rotate-90' : ''}`} />
-														</Button>
-													) : (
-														<Button 
-															variant="primary"
-															onClick={() => handleContinueMilestone(item.id)}
-															className="flex items-center gap-2"
-														>
-															Continue
-															<ArrowRight className="w-4 h-4" />
-														</Button>
-													)
-												)}
+											{/* No card-level toggle.
+											    The card used to call `onToggleRoadmapTask(item.id, …)`
+											    with its OWN id. When the timeline held one card per
+											    lesson that id was a real task; now the card is a whole
+											    topic whose id is `module-N`, which is not a task at all
+											    and would 404 server-side. Completion belongs to the
+											    individual lessons in the dropdown, and a topic is done
+											    only when all of them are — so there is nothing for a
+											    click on the card itself to mean. */}
+											{/* Timeline node */}
+											<div className={`absolute -left-16 w-14 h-14 rounded-full flex items-center justify-center border-2 border-background ${
+												item.completed ? "bg-green-500" : item.current ? "bg-primary" : "bg-text/20"
+											}`}>
+												{item.completed
+													? <CheckCircle className="w-7 h-7 text-white" />
+													: item.current
+													? <PlayCircle className="w-7 h-7 text-white" />
+													: <span className="text-white font-bold">{index + 1}</span>
+												}
 											</div>
-											
-											{/* Topics Dropdown - Only show when study panel is open */}
-											{item.current && showStudyPanel && expandedMilestoneId === item.id && item.topics && (
-												<motion.div
-													initial={{ height: 0, opacity: 0 }}
-													animate={{ height: 'auto', opacity: 1 }}
-													exit={{ height: 0, opacity: 0 }}
-													className="mt-4 pt-4 border-t border-slate-700"
+
+											<div className="flex items-center justify-between">
+												<div>
+													<h3 className={`font-semibold text-text ${item.completed ? "line-through text-text/50" : ""}`}>
+														{item.title}
+													</h3>
+													<p className="text-sm text-text/50 mt-0.5">
+														Module {item.week || index + 1}{item.moduleTitle ? ` · ${item.moduleTitle}` : ""}
+													</p>
+													{item.current && (
+														<div className="flex items-center mt-2 space-x-2">
+															<Badge className="bg-primary/10 text-primary text-xs">Current</Badge>
+															<Zap className="w-3 h-3 text-primary" />
+														</div>
+													)}
+												</div>
+												{/* "Continue" IS the topic dropdown trigger.
+												    It used to be a bare <Button> with no onClick at all, so
+												    pressing it did nothing and the subtopics below were
+												    only reachable through a separate, easy-to-miss "N
+												    subtopics" link. Two controls for one job, one of
+												    them dead — hence "pressed Continue and nothing
+												    happened". */}
+												<Button
+													variant="primary"
+													size="sm"
+													onClick={(e) => { e.stopPropagation(); toggleSubtopic(item.id); }}
+													aria-expanded={expandedTopics.has(item.id)}
 												>
-													<h4 className="text-sm font-semibold text-primary mb-3">Topics:</h4>
-													<div className="space-y-2">
-														{item.topics.map((topic, idx) => {
-															const topicTitle = typeof topic === 'string' ? topic : topic.title;
-															const topicStatus = typeof topic === 'object' ? topic.status : 'pending';
-															const isCompleted = topicStatus === 'completed' || (typeof topic === 'object' && topic.isCompleted);
-															
-															// Check if previous topic is completed (for locking)
-															const previousTopic = idx > 0 ? item.topics[idx - 1] : null;
-															const previousTopicStatus = previousTopic 
-																? (typeof previousTopic === 'object' ? (previousTopic.isCompleted ? 'completed' : (previousTopic.status || 'pending')) : 'pending')
-																: 'completed'; // First topic is always unlocked
-															const isPreviousCompleted = previousTopicStatus === 'completed';
-															const isLocked = !isPreviousCompleted && !isCompleted;
-															
-															return (
-																<button
-																	key={idx}
-																	onClick={() => !isLocked && handleContinueMilestone(item.id, topic)}
-																	disabled={isLocked}
-																	className={`w-full text-left p-3 rounded-lg border flex items-center gap-3 transition-colors group ${
-																		isLocked 
-																			? 'bg-slate-900/50 border-slate-800/50 cursor-not-allowed opacity-50'
-																			: 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/50'
-																	}`}
-																>
-																	{isCompleted ? (
-																		<CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
-																	) : isLocked ? (
-																		<Lock className="w-4 h-4 text-slate-600 flex-shrink-0" />
-																	) : (
-																		<Circle className="w-4 h-4 text-slate-500 group-hover:text-primary flex-shrink-0" />
-																	)}
-																	<span className={`text-sm flex-1 ${
-																		isCompleted 
-																			? 'text-slate-500 line-through' 
-																			: isLocked
-																			? 'text-slate-600'
-																			: 'text-slate-300 group-hover:text-white'
-																	}`}>
-																		{topicTitle}
-																	</span>
-																	{!isLocked && <PlayCircle className="w-4 h-4 text-slate-500 group-hover:text-primary" />}
-																	{isLocked && <span className="text-xs text-slate-600">Complete previous topic</span>}
-																</button>
-															);
-														})}
-													</div>
-												</motion.div>
-											)}
+													{expandedTopics.has(item.id) ? "Hide" : "Continue"}
+													{expandedTopics.has(item.id)
+														? <ChevronDown className="w-3 h-3 ml-1" />
+														: <ArrowRight className="w-3 h-3 ml-1" />}
+												</Button>
+											</div>
+
+										{getTopicSteps(item).length > 0 && (
+										  <div className="mt-4 border-t border-text/10 pt-3">
+										    {expandedTopics.has(item.id) && (
+										      <motion.div
+										        initial={{ opacity: 0, height: 0 }}
+										        animate={{ opacity: 1, height: "auto" }}
+										        className="mb-3 overflow-hidden"
+										      >
+										        <ul className="space-y-1.5">
+										          {getTopicSteps(item).map((step) => (
+										            <li key={step.id}>
+										              {/* Each lesson is its own toggle. stopPropagation
+										                  keeps the card's own click — which marks the
+										                  whole topic done — from firing as well. */}
+										              <button
+										                type="button"
+										                onClick={(e) => {
+										                  e.stopPropagation();
+										                  onToggleRoadmapTask?.(step.id, step.completed);
+										                }}
+										                className="w-full flex items-center gap-2.5 text-left px-2 py-1.5 rounded-lg hover:bg-text/[0.04] transition-colors"
+										              >
+										                {step.completed ? (
+										                  <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+										                ) : (
+										                  <span className="w-4 h-4 rounded-full border-2 border-primary/40 flex-shrink-0" />
+										                )}
+										                <span className={`text-sm flex-1 ${step.completed ? "line-through text-text/40" : "text-text/80"}`}>
+										                  {step.title}
+										                </span>
+										                {step.duration ? (
+										                  <span className="text-xs text-text/40 flex-shrink-0">{step.duration}</span>
+										                ) : null}
+										              </button>
+										            </li>
+										          ))}
+										        </ul>
+										        {/* Concepts, when the wizard supplied additional ones beyond lessons */}
+										        {(() => {
+										          const stepTitles = new Set(
+										            getTopicSteps(item).map(s => s.title.toLowerCase().replace(/^(study|practice|checkpoint):\s*/i, "").trim())
+										          );
+										          const filteredConcepts = getSubtopics(item).filter(sub => {
+										            const norm = sub.toLowerCase().replace(/^(study|practice|checkpoint):\s*/i, "").trim();
+										            return !stepTitles.has(norm);
+										          });
+										          if (filteredConcepts.length === 0) return null;
+										          return (
+										            <ul className="mt-2 pl-6 space-y-1 border-l border-text/10">
+										              {filteredConcepts.map((sub, si) => {
+										                const isDone = item.tasks?.[si]?.completed || item.completed;
+										                return (
+										                  <li key={si} className={`flex items-start gap-2 text-xs ${isDone ? "text-green-600 dark:text-green-400 line-through" : "text-text/60"}`}>
+										                    {isDone ? (
+										                      <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0 mt-0.5" />
+										                    ) : (
+										                      <span className="text-primary/60 mt-1.5 w-1 h-1 rounded-full bg-current flex-shrink-0" />
+										                    )}
+										                    {sub}
+										                  </li>
+										                );
+										              })}
+										            </ul>
+										          );
+										        })()}
+										      </motion.div>
+										    )}
+										  </div>
+										)}
 										</Card>
 									</motion.div>
-									))}
-								</div>
+								))}
 							</div>
-						)}
+						</div>
 					</div>
 				)}
 
 				{/* Quiz View */}
 				{activeView === "quiz" && (
 					<div className="p-4 space-y-6 h-full overflow-y-auto">
-						<div className="flex items-center justify-between">
-							<div>
-								<p className="text-text/60 mt-1 flex items-center">
-									<Brain className="w-4 h-4 mr-3 text-primary" />
-									Test your knowledge and track your progress
-								</p>
-							</div>
-							<div className="flex items-center gap-3">
-								{/* Quiz Counter Badge */}
-								<div className={`px-3 py-1.5 rounded-lg flex items-center gap-2 ${
-									quizzesRemaining > 0 
-										? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border border-cyan-500/30' 
-										: 'bg-red-500/10 border border-red-500/30'
-								}`}>
-									<Brain className={`w-4 h-4 ${quizzesRemaining > 0 ? 'text-cyan-400' : 'text-red-400'}`} />
-									<span className={`text-sm font-medium ${quizzesRemaining > 0 ? 'text-cyan-300' : 'text-red-300'}`}>
-										{quizzesRemaining} / 2 Left Today
-									</span>
-								</div>
-								
-								<Button
-									variant="primary"
-									onClick={handleGenerateQuiz}
-									disabled={generatingQuiz || quizLoading || quizzesRemaining === 0}
-									className="flex items-center"
-								>
-									{generatingQuiz ? (
-										<>
-											<Loader className="w-4 h-4 mr-2 animate-spin" />
-											Generating...
-										</>
-									) : quizzesRemaining === 0 ? (
-										<>
-											<Lock className="w-4 h-4 mr-2" />
-											Limit Reached
-										</>
-									) : (
-										<>
-											<Plus className="w-4 h-4 mr-2" />
-											Generate Quiz
-										</>
-									)}
-								</Button>
-							</div>
-						</div>						{quizLoading ? (
-							<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-								{[1, 2].map((i) => (
-									<div key={i} className="p-6 rounded-xl bg-white dark:bg-gray-800">
-										<QuizSkeleton />
+						<p className="text-text/60 flex items-center">
+							<Brain className="w-4 h-4 mr-2 text-primary" />
+							Test your knowledge and earn achievements
+						</p>
+
+						{/* Quiz result screen */}
+						{quizResult && (
+							<motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}>
+								<Card className="p-8 text-center space-y-4">
+									<div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center ${
+										quizResult.scorePercent >= 80 ? "bg-green-500/20" : "bg-orange-500/20"
+									}`}>
+										<Trophy className={`w-10 h-10 ${quizResult.scorePercent >= 80 ? "text-green-500" : "text-orange-500"}`} />
 									</div>
-								))}
-							</div>
-						) : !currentQuiz ? (
-							availableQuizzes.length === 0 ? (
-								<div className="flex flex-col items-center justify-center py-20 text-center">
-									<div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-										<Brain size={40} className="text-primary/50" />
-									</div>
-									<h3 className="text-xl font-medium text-text mb-2">No Quizzes Available</h3>
-									<p className="text-sm text-text/70 mb-6 max-w-md">
-										Click "Generate Quiz" to create an AI-powered quiz based on completed topics!
-									</p>
-								</div>
-							) : (
-								<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-									{availableQuizzes.map((quiz, index) => (
-										<Card key={quiz._id || index} className="p-6 hover:shadow-lg transition-shadow">
-											<div className="flex items-center space-x-4 mb-6">
-												<div className="w-16 h-16 bg-primary/20 rounded-xl flex items-center justify-center">
-													<Brain className="w-8 h-8 text-primary" />
-												</div>
-												<div>
-													<h3 className="text-xl font-semibold text-text">
-														Quiz {index + 1}
-													</h3>
-													<p className="text-text/60">
-														{quiz.questions?.length || 0} questions
-													</p>
-													{quiz.topics && quiz.topics.length > 0 && (
-														<p className="text-sm text-text/50 mt-1">
-															Topics: {quiz.topics.slice(0, 2).join(', ')}
-															{quiz.topics.length > 2 && ` +${quiz.topics.length - 2} more`}
-														</p>
-													)}
-												</div>
-											</div>
-											<Button
-												variant="primary"
-												className="w-full"
-												onClick={() => setCurrentQuiz(quiz)}
-											>
-												Start Quiz
-												<PlayCircle className="w-4 h-4 ml-2" />
-											</Button>
-										</Card>
-									))}
-								</div>
-							)
-						) : quizResults ? (
-							<Card className="p-8">
-								<div className="text-center space-y-6">
-									<div className="w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-										{quizResults.percentage >= 70 ? (
-											<Trophy className="w-12 h-12 text-primary" />
-										) : (
-											<Brain className="w-12 h-12 text-primary/70" />
-										)}
-									</div>
-									<h3 className="text-3xl font-bold text-text">
-										{quizResults.percentage}%
+									<h3 className="text-2xl font-bold text-text">
+										{quizResult.scorePercent >= 80 ? "Great job! 🎉" : "Keep practising!"}
 									</h3>
+									<p className="text-5xl font-bold text-primary">{quizResult.scorePercent}%</p>
 									<p className="text-text/60">
-										You scored {quizResults.score} out of {quizResults.totalQuestions} questions correctly
+										{quizResult.correctCount} / {quizResult.totalQuestions} correct
 									</p>
-
-									{/* Statistics Grid */}
-									{quizResults.statistics && (
-										<div className="grid grid-cols-3 gap-4 mt-8 pt-6 border-t border-text/10">
-											<div className="text-center">
-												<div className="text-2xl font-bold text-cyan-400">
-													{quizResults.statistics.averageScore}%
-												</div>
-												<div className="text-sm text-text/60 mt-1">
-													Average Score
-												</div>
-											</div>
-											<div className="text-center">
-												<div className="text-2xl font-bold text-green-400">
-													{quizResults.statistics.totalQuizzesCompleted}
-												</div>
-												<div className="text-sm text-text/60 mt-1">
-													Quizzes Completed
-												</div>
-											</div>
-											<div className="text-center">
-												<div className="text-2xl font-bold text-yellow-400">
-													{quizResults.statistics.bestScore}%
-												</div>
-												<div className="text-sm text-text/60 mt-1">
-													Best Score
-												</div>
-											</div>
+									{/* Score bar */}
+									<div className="w-full h-3 bg-text/10 rounded-full">
+										<motion.div
+											initial={{ width: 0 }}
+											animate={{ width: `${quizResult.scorePercent}%` }}
+											transition={{ duration: 1 }}
+											className={`h-full rounded-full ${quizResult.scorePercent >= 80 ? "bg-green-500" : "bg-orange-500"}`}
+										/>
+									</div>
+									{quizResult.earnedAchievement && (
+										<div className="flex items-center gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-xl text-yellow-600 dark:text-yellow-400 text-sm font-medium">
+											{/* The badge's own icon instead of a hardcoded trophy — the
+											    generic 🏆 hid which achievement was actually earned. */}
+											<AchievementIcon
+												icon={quizResult.earnedAchievement.icon}
+												size={18}
+												className="shrink-0 text-yellow-600 dark:text-yellow-400"
+											/>
+											<span>Achievement unlocked: {quizResult.earnedAchievement.title}</span>
 										</div>
 									)}
-
-									{/* Overall Progress Bar */}
-									{quizResults.statistics && (
-										<div className="mt-6">
-											<div className="flex justify-between items-center mb-2">
-												<span className="text-sm text-text/60">Overall Progress</span>
-												<span className="text-sm font-medium text-text">
-													{quizResults.statistics.averageScore}%
-												</span>
-											</div>
-											<div className="w-full bg-text/10 rounded-full h-3 overflow-hidden">
-												<div 
-													className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-500"
-													style={{ width: `${quizResults.statistics.averageScore}%` }}
-												/>
-											</div>
-										</div>
+									{quizResult.explanation && (
+										<p className="text-sm text-text/60">{quizResult.explanation}</p>
 									)}
+									<Button
+										variant="primary"
+										onClick={() => {
+											setQuizResult(null);
+											setCurrentQuiz(null);
+											setSelectedAnswers({});
+											setQuizError("");
+											if (roomData?.id) {
+												getRoomQuizzes(roomData.id).then(res => setQuizzes(res.quizzes || [])).catch(() => {});
+												getPastResults(roomData.id).then(res => setPastResults(res.results || [])).catch(() => {});
+											}
+										}}
+									>
+										Back to Quizzes
+									</Button>
+								</Card>
+							</motion.div>
+						)}
 
-									{quizResults.details && quizResults.details.length > 0 && (
-										<div className="text-left space-y-4 mt-8">
-											<h4 className="font-semibold text-text mb-4">Question Review:</h4>
-											{quizResults.details.map((detail, index) => (
-												<div key={index} className="p-4 border border-text/10 rounded-xl">
-													<div className="flex items-start gap-3">
-														{detail.correct ? (
-															<CheckCircle2 className="w-5 h-5 text-green-500 mt-1 flex-shrink-0" />
-														) : (
-															<XCircle className="w-5 h-5 text-red-500 mt-1 flex-shrink-0" />
-														)}
-														<div className="flex-1">
-															<p className="font-medium text-text mb-2">
-																Question {index + 1}
-															</p>
-															{!detail.correct && detail.explanation && (
-																<p className="text-sm text-text/70">
-																	{detail.explanation}
-																</p>
-															)}
-														</div>
+						{/* Quiz error */}
+						{quizError && !quizResult && (
+							<Card className="p-6 text-center border-red-500/40">
+								<p className="text-sm text-red-500">{quizError}</p>
+								<Button variant="ghost" className="mt-3" onClick={() => setQuizError("")}>
+									Dismiss
+								</Button>
+							</Card>
+						)}
+
+						{/* Test hub — create one, or review past results.
+						    Tests are NOT procreated: a room starts empty, and this is
+						    where the learner asks for one covering today's topic. */}
+						{!currentQuiz && !quizResult && (
+							<div className="space-y-8">
+								<Card className="p-6 text-center">
+									<div className="w-14 h-14 bg-primary/20 rounded-xl flex items-center justify-center mx-auto mb-4">
+										<Brain className="w-7 h-7 text-primary" />
+									</div>
+									<h3 className="font-semibold text-text mb-1">Test yourself on today's topic</h3>
+									<p className="text-sm text-text/60 mb-5">
+										Generate a fresh test from what you covered today. Results are kept for 15 days.
+									</p>
+									<Button variant="primary" onClick={handleCreateTest} disabled={creatingTest}>
+										{creatingTest ? (
+											<>
+												<Loader2 className="w-4 h-4 mr-2 animate-spin" /> Creating your test...
+											</>
+										) : (
+											<>
+												<ClipboardCheck className="w-4 h-4 mr-2" /> Create test
+											</>
+										)}
+									</Button>
+								</Card>
+
+								{pastResults.length > 0 && (
+									<div>
+										<h3 className="text-sm font-semibold text-text mb-3">Your recent tests</h3>
+										<div className="space-y-2">
+											{pastResults.map((r, i) => (
+												<div key={`${r.quizId}-${i}`} className="flex items-center justify-between p-3 rounded-xl border border-text/15 bg-background/50">
+													<div className="min-w-0">
+														<p className="text-sm font-medium text-text truncate">{r.quizTitle}</p>
+														<p className="text-xs text-text/50">{formatResultDate(r.completedAt)}</p>
 													</div>
+													<span className={`text-sm font-semibold shrink-0 ${r.scorePercent >= 70 ? "text-green-500" : r.scorePercent >= 40 ? "text-yellow-500" : "text-red-500"}`}>
+														{r.scorePercent}%
+													</span>
 												</div>
 											))}
 										</div>
-									)}
+										{/* The retention note sits directly under the list it
+										    describes. A learner scrolling past the scores has to be
+										    told that older attempts were dropped on purpose —
+										    otherwise they hunt for a result that is simply gone. */}
+										<p className="text-xs text-text/40 mt-3">
+											Showing results from the past {resultsWindowDays} days. Anything older is no longer kept.
+										</p>
+									</div>
+								)}
 
-									<div className="flex gap-3 justify-center mt-8">
-										<Button
-											variant="ghost"
-											onClick={handleResetQuiz}
-										>
-											Back to Quizzes
-										</Button>
-										<Button
-											variant="primary"
-											onClick={handleGenerateQuiz}
-											disabled={generatingQuiz}
-										>
-											{generatingQuiz ? (
-												<>
-													<Loader className="w-4 h-4 mr-2 animate-spin" />
-													Generating...
-												</>
-											) : (
-												<>
-													<Plus className="w-4 h-4 mr-2" />
-													Generate New Quiz
-												</>
-											)}
-										</Button>
+								{quizzes.length > 0 && (
+									<div>
+										<h3 className="text-sm font-semibold text-text mb-3">Tests you created</h3>
+										<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+											{quizzes.map((quiz, i) => (
+												<motion.div key={quiz.id} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.08 }}>
+													<Card className="p-6 hover:shadow-lg transition-shadow">
+														<div className="flex items-start space-x-4 mb-4">
+															<div className="w-14 h-14 bg-primary/20 rounded-xl flex items-center justify-center flex-shrink-0">
+																<Brain className="w-7 h-7 text-primary" />
+															</div>
+															<div className="flex-1 min-w-0">
+																<h3 className="font-semibold text-text">{quiz.title}</h3>
+																<p className="text-sm text-text/60 mt-0.5">
+																	{quiz.questionCount} questions · {quiz.durationMinutes} min
+																</p>
+															</div>
+														</div>
+														<Button
+															variant={quiz.previousBestScore !== null ? "outline" : "primary"}
+															className="w-full"
+															onClick={() => {
+																if (quiz.previousBestScore !== null) {
+																	setQuizError("This test variant has already been submitted. Click 'Create test' above to generate a fresh variant!");
+																	return;
+																}
+																handleStartQuiz(quiz);
+															}}
+														>
+															{quiz.previousBestScore !== null ? `Submitted (${quiz.previousBestScore}%)` : "Start Test"}
+															<PlayCircle className="w-4 h-4 ml-2" />
+														</Button>
+													</Card>
+												</motion.div>
+											))}
+										</div>
 									</div>
-								</div>
-							</Card>
-						) : (
+								)}
+							</div>
+						)}
+						{/* Active quiz */}
+						{currentQuiz && !quizResult && (
 							<Card className="p-8">
-								<div className="flex items-center justify-between mb-8">
-									<h3 className="text-2xl font-semibold text-text">
-										Quiz in Progress
-									</h3>
-									<div className="flex items-center space-x-4">
-										<Badge
-											variant="primary"
-											className="bg-primary/10 text-primary"
-										>
-											{Object.keys(selectedAnswers).length} /{" "}
-											{currentQuiz.questions?.length || 0} answered
-										</Badge>
-									</div>
+								<div className="flex items-center justify-between mb-6">
+									<h3 className="text-xl font-semibold text-text">{currentQuiz.title}</h3>
+									<Badge className="bg-primary/10 text-primary">
+										{answeredCount} / {activeQuestions.length} answered
+									</Badge>
+								</div>
+
+								{/* Quiz progress bar */}
+								<div className="w-full h-1.5 bg-text/10 rounded-full mb-8">
+									<motion.div
+										animate={{ width: `${quizProgressPercent}%` }}
+										transition={{ duration: 0.3 }}
+										className="h-full bg-primary rounded-full"
+									/>
 								</div>
 
 								<div className="space-y-8">
-									{currentQuiz.questions?.map((question, index) => {
-										const questionId = question._id || question.id || index;
-										return (
-											<motion.div
-												key={questionId}
-												initial={{ opacity: 0, y: 20 }}
-												animate={{ opacity: 1, y: 0 }}
-												transition={{ delay: index * 0.1 }}
-												className="space-y-4"
-											>
-												<h4 className="text-lg font-medium text-text">
-													{index + 1}. {question.question || question.text}
-												</h4>
-												<div className="grid grid-cols-1 gap-3">
-													{question.options?.map((option, optionIndex) => (
-														<motion.button
-															key={optionIndex}
-															whileHover={{ scale: 1.01 }}
-															whileTap={{ scale: 0.99 }}
-															onClick={() =>
-																handleQuizAnswer(questionId, optionIndex)
-															}
-															className={`p-4 text-left border rounded-xl transition-all ${
-																selectedAnswers[questionId] === optionIndex
-																	? "border-primary bg-primary/10 text-primary"
-																	: "border-text/20 hover:bg-alt/20 text-text"
-															}`}
-														>
-															<span className="font-medium mr-3">
-																{String.fromCharCode(65 + optionIndex)}.
-															</span>
-															{option}
-														</motion.button>
-													))}
-												</div>
-											</motion.div>
-										);
-									})}
+									{activeQuestions.map((question, index) => (
+										<motion.div
+											key={question.id}
+											initial={{ opacity: 0, y: 16 }}
+											animate={{ opacity: 1, y: 0 }}
+											transition={{ delay: index * 0.08 }}
+											className="space-y-3"
+										>
+											<h4 className="font-medium text-text">
+												{index + 1}. {question.question}
+											</h4>
+											<div className="grid grid-cols-1 gap-2">
+												{(Array.isArray(question.options) ? question.options : []).map((option, optIdx) => (
+													<motion.button
+														key={optIdx}
+														whileHover={{ scale: 1.01 }}
+														whileTap={{ scale: 0.99 }}
+														onClick={() => handleQuizAnswer(question.id, optIdx)}
+														className={`p-4 text-left border rounded-xl transition-all ${
+															selectedAnswers[question.id] === optIdx
+																? "border-primary bg-primary/10 text-primary font-medium"
+																: "border-text/20 hover:bg-alt/20 text-text"
+														}`}
+													>
+														<span className="font-semibold mr-2">{String.fromCharCode(65 + optIdx)}.</span>
+														{option}
+													</motion.button>
+												))}
+											</div>
+										</motion.div>
+									))}
 								</div>
 
 								<div className="flex justify-between mt-10">
-									<Button
-										variant="ghost"
-										onClick={handleResetQuiz}
-										disabled={quizLoading}
-									>
-										Cancel Quiz
+									<Button variant="ghost" onClick={() => { setCurrentQuiz(null); setSelectedAnswers({}); setQuizError(""); }}>
+										Cancel
 									</Button>
 									<Button
 										variant="primary"
 										onClick={submitQuiz}
-										disabled={
-											quizLoading ||
-											Object.keys(selectedAnswers).length <
-											(currentQuiz.questions?.length || 0)
-										}
+										disabled={quizSubmitting || activeQuestions.length === 0 || answeredCount < activeQuestions.length}
 									>
-										{quizLoading ? (
-											<>
-												<Loader className="w-4 h-4 mr-2 animate-spin" />
-												Submitting...
-											</>
-										) : (
-											<>
-												Submit Quiz
-												<Award className="w-4 h-4 ml-2" />
-											</>
-										)}
+										{quizSubmitting
+											? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Submitting...</>
+											: <><Award className="w-4 h-4 mr-2" /> Submit Quiz</>
+										}
 									</Button>
 								</div>
 							</Card>
@@ -1585,61 +882,13 @@ const RoomContent = ({
 
 				{/* Kanban View */}
 				{activeView === "kanban" && (
-					<div className=" py-6 h-full flex flex-col mx-6">
-						<KanbanView roomData={roomData} userId={currentUserId} />
+					<div className="py-6 h-full flex flex-col mx-6">
+						<KanbanView roomData={roomData} />
 					</div>
 				)}
 			</div>
 
-			{/* Study Panel - Show alongside roadmap when active */}
-			<AnimatePresence>
-				{showStudyPanel && selectedMilestone && (
-					<motion.div
-						initial={{ opacity: 0, x: 300 }}
-						animate={{ opacity: 1, x: 0 }}
-						exit={{ opacity: 0, x: 300 }}
-						transition={{ type: "spring", damping: 25, stiffness: 200 }}
-						className="flex-1 h-full"
-					>
-						<StudyLayout
-							milestone={selectedMilestone}
-							roomData={roomData}
-							userId={currentUserId}
-							onClose={handleCloseStudyPanel}
-							onSubtopicComplete={handleSubtopicComplete}
-							onTopicComplete={handleTopicCompleteWrapper}
-							timerState={timerState}
-							onPauseResume={handleStopMinimizedTimer}
-							onCompleteSession={handleCompleteMinimizedTimer}
-							onResetTimer={async () => {
-								await stopSession();
-								setShowMinimizedTimer(false);
-								setShowStudyPanel(false);
-							}}
-							userProgress={userProgress}
-							streak={0}
-							onlineMembers={onlineMembers}
-							specificTopic={selectedTask?.specificTopic}
-							todaysTasks={displayTodaysTasks}
-							onMilestoneChange={(newMilestone) => {
-								console.log('🔄 Changing milestone to:', newMilestone.title);
-								const syntheticItem = roadmapItems.find(item => 
-									item._id === newMilestone._id || 
-									item.milestoneId === newMilestone.milestoneId ||
-									item.title === newMilestone.title
-								);
-								if (syntheticItem) {
-									handleContinueMilestone(syntheticItem.id);
-								} else {
-									setSelectedMilestone(newMilestone);
-								}
-							}}
-						/>
-					</motion.div>
-				)}
-			</AnimatePresence>
-
-			{/* Right Members Panel - Toggleable */}
+			{/* Right Members Panel */}
 			<AnimatePresence>
 				{showMembers && (
 					<motion.div
@@ -1652,10 +901,26 @@ const RoomContent = ({
 						<div className="flex items-center space-x-2 mb-6">
 							<Users className="w-5 h-5 text-text/60" />
 							<h3 className="font-semibold text-text">Members</h3>
-							<Badge variant="primary" className="bg-primary/10 text-primary">
-								{members.length}
-							</Badge>
+							<Badge className="bg-primary/10 text-primary">{members.length}</Badge>
 						</div>
+
+						{/* Room-wide progress bar */}
+						{members.length > 0 && (
+							<div className="mb-5">
+								<div className="flex justify-between text-xs text-text/50 mb-1">
+									<span>Room average</span>
+									<span>{roomData.completionRate ?? 0}%</span>
+								</div>
+								<div className="w-full h-2 bg-text/10 rounded-full">
+									<motion.div
+										initial={{ width: 0 }}
+										animate={{ width: `${roomData.completionRate ?? 0}%` }}
+										transition={{ duration: 1 }}
+										className="h-full bg-primary rounded-full"
+									/>
+								</div>
+							</div>
+						)}
 
 						<div className="space-y-3">
 							{members.map((member, index) => (
@@ -1665,66 +930,42 @@ const RoomContent = ({
 									animate={{ opacity: 1, x: 0 }}
 									transition={{ delay: index * 0.05 }}
 								>
-									<Card
-										className={`p-4 transition-all hover:shadow-md ${
-											member.isCurrentUser ? "ring-2 ring-primary/30" : ""
-										}`}
-									>
+									<Card className={`p-4 transition-all hover:shadow-md ${member.isCurrentUser ? "ring-2 ring-primary/30" : ""}`}>
 										<div className="flex items-center space-x-3">
-											<div className="relative">
-												<div className="w-12 h-12 bg-primary/20 rounded-full flex items-center justify-center">
-													<span className="text-primary font-medium text-lg">
-														{member?.name?.charAt(0) || "?"}
-													</span>
-												</div>
-												{member.isCurrentUser && (
-													<Crown className="absolute -top-1 -right-1 w-5 h-5 text-yellow-500" />
+											<div className="relative flex-shrink-0">
+												{member.avatarUrl ? (
+													<img src={member.avatarUrl} alt={member.name} className="w-11 h-11 rounded-full object-cover" />
+												) : (
+													<div className="w-11 h-11 bg-primary/20 rounded-full flex items-center justify-center">
+														<span className="text-primary font-semibold">{(member.name || "?").charAt(0).toUpperCase()}</span>
+													</div>
 												)}
-												{/* Discord-style presence indicator */}
-												{(() => {
-													const presence = getUserPresence ? getUserPresence(member.id) : null;
-													const isOnline = presence?.status === 'online' || presence?.status === 'idle' || (Array.isArray(onlineMembers) && onlineMembers.some(o => o.id === member.id));
-													return (
-														<PresenceIndicator
-															status={presence?.status || (isOnline ? 'online' : 'offline')}
-															size="sm"
-															className="absolute -bottom-0.5 -right-0.5"
-														/>
-													);
-												})()}
+												{member.isCurrentUser && (
+													<Crown className="absolute -top-1 -right-1 w-4 h-4 text-yellow-500" />
+												)}
+												<Circle className="absolute -bottom-0.5 -right-0.5 w-3 h-3 text-green-500 fill-current" />
 											</div>
 
 											<div className="flex-1 min-w-0">
-												<div className="flex items-center space-x-2">
-													<p className="font-medium text-text truncate">
-														{member?.name || "Unknown User"}
+												<div className="flex items-center justify-between">
+													<p className="font-medium text-text truncate text-sm">
+														{member.name}
+														{member.isCurrentUser && <span className="text-primary text-xs ml-1">(You)</span>}
 													</p>
-													{member.isCurrentUser && (
-														<span className="text-xs text-primary font-medium">
-															(You)
-														</span>
-													)}
+													<span className="text-sm font-bold text-text ml-2">{member.progress ?? 0}%</span>
 												</div>
-											<div className="flex items-center justify-between mt-1">
-												<span
-													className={`text-sm font-medium capitalize ${getProgressStatusColor(
-														member.status
-													)}`}
-												>
-													{member.status ? member.status.replace("-", " ") : "Not ready"}
+												<span className={`text-xs font-medium capitalize ${getStatusColor(member.status)}`}>
+													{member.status ? member.status.replace("-", " ") : "unknown"}
 												</span>
-												<span className="text-sm font-semibold text-text">
-													{member.progress?.progressPercentage || 0}%
-												</span>
-											</div>
-											<div className="w-full h-2 bg-text/20 rounded-full mt-3">
-												<motion.div
-													initial={{ width: 0 }}
-													animate={{ width: `${member.progress?.progressPercentage || 0}%` }}
-													transition={{ duration: 0.8, delay: index * 0.1 }}
-													className="h-full bg-primary rounded-full"
-												/>
-											</div>
+												{/* Per-member progress bar */}
+												<div className="w-full h-1.5 bg-text/10 rounded-full mt-2">
+													<motion.div
+														initial={{ width: 0 }}
+														animate={{ width: `${member.progress ?? 0}%` }}
+														transition={{ duration: 0.8, delay: index * 0.08 }}
+														className={`h-full rounded-full ${getStatusBarColor(member.status)}`}
+													/>
+												</div>
 											</div>
 										</div>
 									</Card>
@@ -1735,60 +976,21 @@ const RoomContent = ({
 				)}
 			</AnimatePresence>
 
-			{/* Modals */}
-			{/* Completion Prompt Modal */}
-			<CompletionPromptModal
-				isOpen={showCompletionPrompt}
-				onContinueLearning={handleContinueLearning}
-				onStopForToday={handleStopForToday}
-				tasksCompleted={displayTodaysTasks.filter(t => t.completed).length}
-				totalTasks={displayTodaysTasks.length}
-				timeSpent={timerState.totalSessionTime || 0}
-			/>
-
-			{showMilestoneModal && selectedMilestone && (
-				<MilestoneDetailModal
-					milestone={selectedMilestone}
-					onClose={() => {
-						setShowMilestoneModal(false);
-						setSelectedMilestone(null);
-					}}
-					onStartTracking={handleStartMilestoneTracking}
-				/>
-			)}
-
-			{showTimerModal && selectedTask && (
-				<TaskTimerModal
-					task={selectedTask}
-					milestone={selectedMilestone}
-					onClose={() => {
-						setShowTimerModal(false);
-						setSelectedTask(null);
-						setSelectedMilestone(null);
-					}}
-					onComplete={handleTaskComplete}
-					onMinimize={handleMinimizeTimer}
-					onTimerUpdate={setTimerState}
-				/>
-			)}
-
-			{/* Study Session Components */}
 			<AnimatePresence>
-				{/* Show minimized timer only when NOT in study panel */}
-				{showMinimizedTimer && timerState.task && !showStudyPanel && (
-					<MinimizedTimer
-						task={timerState.task}
-						elapsedSeconds={timerState.elapsedSeconds}
-						isRunning={timerState.isRunning}
-						progress={timerState.progress}
-						onExpand={handleExpandTimer}
-						onStop={handleStopMinimizedTimer}
-						onComplete={handleCompleteMinimizedTimer}
+				{showReplanModal && (
+					<ReplanModal
+						currentDailyTime={roomData.daily_time || roomData.dailyTime}
+						currentAvailability={roomData.availability}
+						onReplan={async (opts) => {
+							if (onReplanRoadmap) {
+								await onReplanRoadmap(opts);
+							}
+						}}
+						onClose={() => setShowReplanModal(false)}
 					/>
 				)}
 			</AnimatePresence>
-			</div>
-		</>
+		</div>
 	);
 };
 

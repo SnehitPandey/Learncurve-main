@@ -41,10 +41,10 @@
         --color-alt-rgb: 29, 29, 29;
         --color-gradient: linear-gradient(
             160deg,
-            #121214 0%,
-            #182026 35%,
-            #0f4442 60%,
-            #44cfc2 100%
+            rgba(18, 18, 20, 0.7) 0%,
+            rgba(24, 32, 38, 0.5) 35%,
+            rgba(15, 68, 66, 0.3) 60%,
+            rgba(68, 207, 194, 0.15) 100%
         );
         
         /* Selection colors for dark theme */
@@ -83,7 +83,7 @@ body {
 }
 
 html[data-theme="dark"] body {
-    background: var(--color-gradient);
+    background: #090a0f;
     background-repeat: no-repeat;
     background-attachment: fixed;
     background-size: cover;
@@ -173,21 +173,78 @@ html::-webkit-scrollbar-track {
     background: #2a2a2a;
 }
 
+/* Thumb colours derive from --color-primary-rgb so the scrollbar follows the
+   selected accent instead of staying pinned to the teal defaults. */
 html::-webkit-scrollbar-thumb {
-    background: rgba(34, 167, 153, 0.6);
+    background: rgb(var(--color-primary-rgb) / 0.6);
     border-radius: 4px;
 }
 
-[data-theme="dark"] html::-webkit-scrollbar-thumb {
-    background: rgba(29, 211, 193, 0.7);
-}
-
 html::-webkit-scrollbar-thumb:hover {
-    background: rgba(34, 167, 153, 0.8);
+    background: rgb(var(--color-primary-rgb) / 0.85);
 }
 
-[data-theme="dark"] html::-webkit-scrollbar-thumb:hover {
-    background: rgba(29, 211, 193, 0.9);
+/* ---------------------------------------------------------------------------
+   ACCENT COLOUR
+   The Settings page has always offered an accent picker, but `--color-primary`
+   was only ever defined per-theme — there was no selector a stored
+   `accentColor` could switch, so choosing a swatch persisted the value and
+   changed nothing on screen. These blocks are what the picker actually drives.
+
+   CASCADE NOTE (deliberate, not incidental):
+   `[data-accent]` and `[data-theme="dark"]` have equal specificity, so an accent
+   block placed after the theme block also wins in dark mode — with its LIGHT
+   value. That would be wrong, so each accent also gets a combined
+   `[data-theme="dark"][data-accent=...]` rule, which is strictly more specific
+   and restores the dark value. Any accent added later must follow this same
+   two-block shape, or it will silently render its light colour in dark mode.
+--------------------------------------------------------------------------- */
+
+[data-accent="teal"] {
+    --color-primary: rgb(34, 167, 153);
+    --color-primary-rgb: 34, 167, 153;
+}
+[data-theme="dark"][data-accent="teal"] {
+    --color-primary: rgb(29, 211, 193);
+    --color-primary-rgb: 29, 211, 193;
+}
+
+[data-accent="sky"] {
+    --color-primary: rgb(14, 165, 233);
+    --color-primary-rgb: 14, 165, 233;
+}
+[data-theme="dark"][data-accent="sky"] {
+    --color-primary: rgb(56, 189, 248);
+    --color-primary-rgb: 56, 189, 248;
+}
+
+[data-accent="indigo"] {
+    --color-primary: rgb(79, 70, 229);
+    --color-primary-rgb: 79, 70, 229;
+}
+[data-theme="dark"][data-accent="indigo"] {
+    --color-primary: rgb(129, 140, 248);
+    --color-primary-rgb: 129, 140, 248;
+}
+
+[data-accent="rose"] {
+    --color-primary: rgb(225, 29, 72);
+    --color-primary-rgb: 225, 29, 72;
+}
+[data-theme="dark"][data-accent="rose"] {
+    --color-primary: rgb(251, 113, 133);
+    --color-primary-rgb: 251, 113, 133;
+}
+
+/* Selection colours are declared in terms of --color-primary-rgb so they follow
+   whatever accent is active instead of being hardcoded per theme. Custom
+   properties resolve their var() references against the element's final
+   computed value, so this holds regardless of the order of the blocks above. */
+[data-accent] {
+    --color-selection-bg: rgb(var(--color-primary-rgb) / 0.25);
+    --color-selection-text: rgb(var(--color-primary-rgb));
+    --color-selection-glow: rgb(var(--color-primary-rgb) / 0.8);
+    --color-selection-shadow: rgb(var(--color-primary-rgb) / 0.4);
 }
 
 
@@ -232,7 +289,8 @@ html::-webkit-scrollbar-thumb:hover {
     background: transparent;
 }
 
-/* Main window scrollbar */
+/* Main window scrollbar (duplicated verbatim above; identical declarations, so
+   the later copy adds nothing) */
 html::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -246,19 +304,76 @@ html::-webkit-scrollbar-track {
     background: #2a2a2a;
 }
 
+/* Thumb colours derive from --color-primary-rgb so the scrollbar follows the
+   selected accent instead of staying pinned to the teal defaults. */
 html::-webkit-scrollbar-thumb {
-    background: rgba(34, 167, 153, 0.6);
+    background: rgb(var(--color-primary-rgb) / 0.6);
     border-radius: 4px;
 }
 
-[data-theme="dark"] html::-webkit-scrollbar-thumb {
-    background: rgba(29, 211, 193, 0.7);
-}
-
 html::-webkit-scrollbar-thumb:hover {
-    background: rgba(34, 167, 153, 0.8);
+    background: rgb(var(--color-primary-rgb) / 0.85);
 }
 
-[data-theme="dark"] html::-webkit-scrollbar-thumb:hover {
-    background: rgba(29, 211, 193, 0.9);
+/* ---------------------------------------------------------------------------
+   ACCENT COLOUR
+   The Settings page has always offered an accent picker, but `--color-primary`
+   was only ever defined per-theme — there was no selector a stored
+   `accentColor` could switch, so choosing a swatch persisted the value and
+   changed nothing on screen. These blocks are what the picker actually drives.
+
+   CASCADE NOTE (deliberate, not incidental):
+   `[data-accent]` and `[data-theme="dark"]` have equal specificity, so an accent
+   block placed after the theme block also wins in dark mode — with its LIGHT
+   value. That would be wrong, so each accent also gets a combined
+   `[data-theme="dark"][data-accent=...]` rule, which is strictly more specific
+   and restores the dark value. Any accent added later must follow this same
+   two-block shape, or it will silently render its light colour in dark mode.
+--------------------------------------------------------------------------- */
+
+[data-accent="teal"] {
+    --color-primary: rgb(34, 167, 153);
+    --color-primary-rgb: 34, 167, 153;
+}
+[data-theme="dark"][data-accent="teal"] {
+    --color-primary: rgb(29, 211, 193);
+    --color-primary-rgb: 29, 211, 193;
+}
+
+[data-accent="sky"] {
+    --color-primary: rgb(14, 165, 233);
+    --color-primary-rgb: 14, 165, 233;
+}
+[data-theme="dark"][data-accent="sky"] {
+    --color-primary: rgb(56, 189, 248);
+    --color-primary-rgb: 56, 189, 248;
+}
+
+[data-accent="indigo"] {
+    --color-primary: rgb(79, 70, 229);
+    --color-primary-rgb: 79, 70, 229;
+}
+[data-theme="dark"][data-accent="indigo"] {
+    --color-primary: rgb(129, 140, 248);
+    --color-primary-rgb: 129, 140, 248;
+}
+
+[data-accent="rose"] {
+    --color-primary: rgb(225, 29, 72);
+    --color-primary-rgb: 225, 29, 72;
+}
+[data-theme="dark"][data-accent="rose"] {
+    --color-primary: rgb(251, 113, 133);
+    --color-primary-rgb: 251, 113, 133;
+}
+
+/* Selection colours are declared in terms of --color-primary-rgb so they follow
+   whatever accent is active instead of being hardcoded per theme. Custom
+   properties resolve their var() references against the element's final
+   computed value, so this holds regardless of the order of the blocks above. */
+[data-accent] {
+    --color-selection-bg: rgb(var(--color-primary-rgb) / 0.25);
+    --color-selection-text: rgb(var(--color-primary-rgb));
+    --color-selection-glow: rgb(var(--color-primary-rgb) / 0.8);
+    --color-selection-shadow: rgb(var(--color-primary-rgb) / 0.4);
 }

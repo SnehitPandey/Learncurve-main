@@ -13,115 +13,18 @@ import {
 } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import { Card, Badge } from '../../elements/elements';
-import { chatService } from '../../../services/chatService';
-import { socketService } from '../../../services/socketService';
+import { getRoomMessages, sendRoomMessage } from '../../../api/chat';
+import { confirmLocalMessage } from '../../../utils/chatMessages';
 
-const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId }) => {
-    // Chat state
+// Collision-free optimistic message ids.
+let localSeq = 0;
+
+const RoomOverlay = ({ content, members = [], roomData, unreadCount, onClose, roomId }) => {
+    // Chat state — loaded live from backend, no sample messages
     const [message, setMessage] = useState("");
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const [messages, setMessages] = useState([]);
-    const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-    const [typingUsers, setTypingUsers] = useState([]);
-    
-    // Get current user info
-    const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-    
-    // Typing timeout ref
-    const typingTimeoutRef = useRef(null);
-    
-    // Fetch chat history when overlay opens with chat content
-    useEffect(() => {
-        const fetchMessages = async () => {
-            if (content !== 'chat' || !roomId) return;
-            
-            try {
-                setIsLoadingMessages(true);
-                const response = await chatService.getMessages(roomId, { limit: 50, order: 'asc' });
-                
-                if (response.success && response.messages) {
-                    const formattedMessages = response.messages.map(msg => ({
-                    id: msg._id || msg.id || Date.now().toString(),
-                    userId: msg.user?._id || msg.senderId,
-                    user: msg.user?.name || msg.senderName || 'Unknown',
-                    avatar: msg.user?.avatarUrl || msg.user?.profilePic || msg.user?.customAvatarURL || msg.avatar ||
-                        ((msg.user?.name || msg.senderName) ? (msg.user?.name || msg.senderName).substring(0, 2).toUpperCase() : 'UN'),
-                        message: msg.content,
-                    timestamp: new Date(msg.timestamp || msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    isCurrentUser: (msg.user?._id || msg.senderId) === currentUser.id
-                    }));
-                    setMessages(formattedMessages);
-                }
-            } catch (error) {
-                console.error('Failed to fetch messages:', error);
-            } finally {
-                setIsLoadingMessages(false);
-            }
-        };
-
-        fetchMessages();
-    }, [content, roomId, currentUser.id]);
-
-    // Listen for new messages via Socket.IO
-    useEffect(() => {
-        if (content !== 'chat' || !roomId) return;
-
-        const handleNewMessage = (msg) => {
-            console.log('New message received:', msg);
-            const formattedMessage = {
-                id: msg.id || Date.now().toString(),
-                userId: msg.userId || msg.senderId,
-                user: msg.username || msg.senderName || 'Unknown',
-                avatar: msg.avatar || ((msg.username || msg.senderName) ? (msg.username || msg.senderName).substring(0, 2).toUpperCase() : 'UN'),
-                message: msg.content,
-                timestamp: new Date(msg.timestamp || msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                isCurrentUser: (msg.userId || msg.senderId) === currentUser.id
-            };
-            setMessages(prev => [...prev, formattedMessage]);
-        };
-
-        const handleSystemMessage = (data) => {
-            const systemMsg = {
-                id: Date.now().toString(),
-                userId: null,
-                user: 'System',
-                avatar: '🔔',
-                message: data.type === 'join' 
-                    ? `${data.username} joined the room` 
-                    : `${data.username} left the room`,
-                timestamp: new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                isSystem: true,
-                isCurrentUser: false
-            };
-            setMessages(prev => [...prev, systemMsg]);
-        };
-
-        const handleTyping = (data) => {
-            if (data.userId === currentUser.id) return;
-            
-            if (data.isTyping) {
-                setTypingUsers(prev => {
-                    if (!prev.find(u => u.userId === data.userId)) {
-                        return [...prev, { userId: data.userId, username: data.username }];
-                    }
-                    return prev;
-                });
-            } else {
-                setTypingUsers(prev => prev.filter(u => u.userId !== data.userId));
-            }
-        };
-
-        socketService.onMessage(handleNewMessage);
-        socketService.onSystemMessageNew(handleSystemMessage);
-        socketService.onChatTyping(handleTyping);
-
-        return () => {
-            // Cleanup listeners when overlay closes
-            socketService.socket?.off('NEW_MESSAGE', handleNewMessage);
-            socketService.socket?.off('chat:system', handleSystemMessage);
-            socketService.socket?.off('chat:typing', handleTyping);
-        };
-    }, [content, roomId, currentUser.id]);
+    const [chatLoading, setChatLoading] = useState(true);
 
     const messagesEndRef = useRef(null);
     const textareaRef = useRef(null);
@@ -140,21 +43,7 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
     // Auto-resize textarea function
     const handleTextareaChange = useCallback((e) => {
         const textarea = e.target;
-        const newValue = textarea.value;
-        setMessage(newValue);
-        
-        // Emit typing indicator
-        if (roomId && newValue.trim()) {
-            socketService.sendTyping(roomId, true);
-            
-            if (typingTimeoutRef.current) {
-                clearTimeout(typingTimeoutRef.current);
-            }
-            
-            typingTimeoutRef.current = setTimeout(() => {
-                socketService.sendTyping(roomId, false);
-            }, 2000);
-        }
+        setMessage(textarea.value);
         
         textarea.style.height = 'auto';
         
@@ -165,7 +54,7 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
             textarea.style.height = '120px';
             textarea.style.overflowY = 'auto';
         }
-    }, [roomId]);
+    }, []);
 
     // Auto-resize on message change (for emoji insertion)
     useEffect(() => {
@@ -205,22 +94,98 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
         scrollToBottom();
     }, [messages]);
 
-    const handleSendMessage = (e) => {
-        e.preventDefault();
-        if (!message.trim() || !roomId) return;
+    // Load live chat history when overlay opens in chat mode
+    useEffect(() => {
+        let mounted = true;
+        const load = async () => {
+            if (content !== 'chat' || !roomId) return;
+            setChatLoading(true);
+            try {
+                const res = await getRoomMessages(roomId);
+                const raw = res?.messages || res?.data;
+                // `data` is not guaranteed to be an array — guard before .map
+                const list = Array.isArray(raw) ? raw : [];
+                if (!mounted) return;
+                let myId = null;
+                try { myId = JSON.parse(localStorage.getItem("user") || "{}").id || null; } catch {
+                    // Corrupt/absent localStorage — fall back to server-provided flags.
+                }
+                const fromServer = list.map(m => {
+                    const name = m.userName || m.sender_name || "Peer";
+                    const isMine = m.is_current_user !== undefined ? !!m.is_current_user : (myId ? (m.userId === myId || m.user_id === myId) : false);
+                    return {
+                        id: m._id || m.id,
+                        user: isMine ? "You" : name,
+                        avatar: (isMine ? "YOU" : String(name)).slice(0, 2).toUpperCase(),
+                        // Sent by the API all along, never read before.
+                        avatarUrl: m.userAvatar || m.avatar || m.avatarUrl || "",
+                        message: m.content,
+                        timestamp: (m.createdAt || m.created_at) ? new Date(m.createdAt || m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Just now",
+                        isCurrentUser: !!isMine
+                    };
+                });
 
-        // Send message via Socket.IO
-        socketService.sendMessage(roomId, message.trim(), 'TEXT');
-        
-        // Clear typing indicator
-        socketService.sendTyping(roomId, false);
-        if (typingTimeoutRef.current) {
-            clearTimeout(typingTimeoutRef.current);
-        }
-        
-        // Clear input
+                // Server history is the source of truth. Any still-unconfirmed
+                // local row whose text now appears in it is dropped, so reloading
+                // the panel cannot leave the sender staring at their own message
+                // twice.
+                setMessages(prev => {
+                    const persisted = new Set(fromServer.map(m => m.message));
+                    const stillPending = prev.filter(
+                        m => String(m.id).startsWith("local-") && !persisted.has(m.message)
+                    );
+                    return [...fromServer, ...stillPending];
+                });
+            } catch (err) {
+                console.warn("[Overlay] chat load failed:", err?.message);
+            } finally {
+                if (mounted) setChatLoading(false);
+            }
+        };
+        load();
+        return () => { mounted = false; };
+    }, [content, roomId]);
+
+    const handleSendMessage = async (e) => {
+        e.preventDefault();
+        if (!message.trim()) return;
+
+        const trimmed = message.trim();
+        // `Date.now()` alone can collide when two sends land in the same
+        // millisecond, which produced duplicate React keys.
+        const optimisticId = `local-${Date.now()}-${++localSeq}`;
+        const optimistic = {
+            id: optimisticId,
+            user: "You",
+            avatar: "YO",
+            message: trimmed,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            isCurrentUser: true
+        };
+
+        setMessages(prev => [...prev, optimistic]);
         setMessage("");
         setShowEmojiPicker(false);
+
+        if (roomId) {
+            try {
+                // Reconcile the optimistic row onto the id the server assigned.
+                // Previously this call's result was ignored entirely, so the local
+                // copy stayed on screen under its `local-…` id while the next
+                // history load added the server's copy beside it — the sender saw
+                // their message twice, then a third time on the next reload.
+                const res = await sendRoomMessage(roomId, trimmed);
+                const saved = res?.message;
+                if (saved?.id || saved?._id) {
+                    setMessages(prev => confirmLocalMessage(prev, optimisticId, saved, trimmed));
+                } else {
+                    // No server id came back; just clear the pending flag.
+                    setMessages(prev => prev.map(m => (m.id === optimisticId ? { ...m, pending: false } : m)));
+                }
+            } catch (err) {
+                console.warn("[Overlay] send failed:", err?.message);
+            }
+        }
         
         if (textareaRef.current) {
             textareaRef.current.style.height = '40px';
@@ -258,7 +223,7 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
                                 <div className="relative">
                                     <div className="w-12 h-12 bg-primary/20 rounded-full flex items-center justify-center">
                                         <span className="text-primary font-medium text-lg">
-                                            {member.name.charAt(0)}
+                                            {(member.name || "?").charAt(0).toUpperCase()}
                                         </span>
                                     </div>
                                     {member.isCurrentUser && (
@@ -278,17 +243,17 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
                                     </div>
                                     <div className="flex items-center justify-between mt-1">
                                         <span className={`text-sm font-medium capitalize ${getStatusColor(member.status)}`}>
-                                            {member.status.replace('-', ' ')}
+                                            {member.status ? member.status.replace('-', ' ') : 'unknown'}
                                         </span>
                                         <span className="text-sm font-semibold text-text">
-                                            {member.progress?.progressPercentage || 0}%
+                                            {member.progress ?? 0}%
                                         </span>
                                     </div>
                                     
                                     <div className="w-full h-2 bg-text/20 rounded-full mt-3">
                                         <motion.div 
                                             initial={{ width: 0 }}
-                                            animate={{ width: `${member.progress?.progressPercentage || 0}%` }}
+                                            animate={{ width: `${member.progress ?? 0}%` }}
                                             transition={{ duration: 0.8, delay: index * 0.1 }}
                                             className="h-full bg-primary rounded-full"
                                         />
@@ -306,6 +271,9 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
         <div className="flex flex-col h-full">
             {/* Messages Container */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3 mb-24">
+                {chatLoading && messages.length === 0 && (
+                    <p className="text-center text-xs text-text/40">Loading messages...</p>
+                )}
                 <AnimatePresence>
                     {messages.map((msg, index) => (
                         <motion.div
@@ -316,17 +284,26 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
                             className="flex gap-3"
                         >
                             <div className="flex-shrink-0">
-                                <div 
-                                    className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold"
-                                    style={{
-                                        backgroundColor: msg.isCurrentUser 
-                                            ? "var(--color-primary)" 
-                                            : "#667eea",
-                                        color: "white"
-                                    }}
-                                >
-                                    {msg.avatar}
-                                </div>
+                                {msg.avatarUrl ? (
+                                    <img
+                                        src={msg.avatarUrl}
+                                        alt={msg.user}
+                                        className="w-8 h-8 rounded-full object-cover"
+                                        onError={(e) => { e.currentTarget.style.display = "none"; }}
+                                    />
+                                ) : (
+                                    <div
+                                        className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold"
+                                        style={{
+                                            backgroundColor: msg.isCurrentUser
+                                                ? "var(--color-primary)"
+                                                : "#667eea",
+                                            color: "white"
+                                        }}
+                                    >
+                                        {msg.avatar}
+                                    </div>
+                                )}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 mb-1">
@@ -469,7 +446,7 @@ const RoomOverlay = ({ content, members, roomData, unreadCount, onClose, roomId 
             {/* Content */}
             {content === 'members' ? renderMembers() : renderChat()}
 
-            {/* Custom Styles - Using regular style tag */}
+            {/* Custom Styles */}
             <style>{`
                 .overflow-y-auto::-webkit-scrollbar {
                     width: 4px;
