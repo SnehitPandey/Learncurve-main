@@ -77,7 +77,10 @@ export default function Login() {
     }
   };
 
+  const [isWarmingUp, setIsWarmingUp] = useState(false);
+
   const handleGoogleLogin = async () => {
+    const timer = setTimeout(() => setIsWarmingUp(true), 2000);
     try {
       setIsLoading(true);
       setError("");
@@ -90,6 +93,8 @@ export default function Login() {
     } catch (err) {
       setError(err.message || "Google login failed");
     } finally {
+      clearTimeout(timer);
+      setIsWarmingUp(false);
       setIsLoading(false);
     }
   };
@@ -120,6 +125,11 @@ export default function Login() {
             onClick={handleGoogleLogin}
             isLoading={isLoading}
           />
+          {isWarmingUp && (
+            <p className="text-xs text-center text-text/60 animate-pulse">
+              Cloud server is waking up (takes ~30s on cold start)...
+            </p>
+          )}
         </div>
 
         <div className="text-center">

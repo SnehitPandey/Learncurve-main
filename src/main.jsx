@@ -444,6 +444,12 @@ const router = createBrowserRouter([
 // with the default and then jumps to the user's colour on mount.
 initAccent();
 
+// Silent pre-warm ping for Render backend cold-starts.
+// Fires immediately when a visitor loads any page so the backend container
+// spins up in the background while the user reads the site.
+const apiBase = import.meta.env.VITE_API_URL || "/api";
+fetch(`${apiBase}/health`).catch(() => {});
+
 createRoot(document.getElementById("root")).render(
     <StrictMode>
         <RouterProvider router={router} />

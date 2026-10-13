@@ -153,7 +153,10 @@ export default function Signup() {
     }
   };
 
+  const [isWarmingUp, setIsWarmingUp] = useState(false);
+
   const handleGoogleSignup = async () => {
+    const timer = setTimeout(() => setIsWarmingUp(true), 2000);
     setIsLoading(true);
     setError("");
     try {
@@ -162,10 +165,12 @@ export default function Signup() {
         window.location.href = oauthRes.url;
         return;
       }
-      throw new Error(oauthRes?.error || "Unable to initiate Google signup. Please register with email.");
+      throw new Error(oauthRes?.error || "Unable to initiate Google signup. Please try again.");
     } catch (err) {
       setError(err.message || "Google signup failed");
     } finally {
+      clearTimeout(timer);
+      setIsWarmingUp(false);
       setIsLoading(false);
     }
   };
@@ -244,6 +249,11 @@ export default function Signup() {
                 onClick={handleGoogleSignup}
                 isLoading={isLoading}
               />
+              {isWarmingUp && (
+                <p className="text-xs text-center text-text/60 animate-pulse">
+                  Cloud server is waking up (takes ~30s on cold start)...
+                </p>
+              )}
             </div>
           )}
 
